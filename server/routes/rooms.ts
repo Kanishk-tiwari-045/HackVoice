@@ -65,6 +65,23 @@ router.post('/create', async (req, res) => {
   }
 });
 
+router.get('/:roomCode', async (req, res) => {
+  try {
+    const { roomCode } = req.params;
+    const { data, error } = await supabase
+      .from('rooms')
+      .select('code, qr_code, creator_id, created_at')
+      .eq('code', roomCode)
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching room details:', error);
+    res.status(500).json({ error: 'Failed to fetch room details' });
+  }
+});
+
 /**
  * POST /api/rooms/join
  * Joins an existing room by inserting a row into room_members. 
@@ -74,7 +91,7 @@ router.post('/join', async (req, res) => {
   try {
     const { userId, roomCode } = joinRoomSchema.parse(req.body);
 
-    // Check if room exists using Supabase
+    // Check if room exists
     const { data: roomData, error: roomError } = await supabase
       .from('rooms')
       .select('*')
@@ -95,33 +112,30 @@ router.post('/join', async (req, res) => {
 
     if (memberError) throw memberError;
 
-    // OPTION A: If you want to throw an error if user is already in the room
-    if (existingMember) {
-      return res.status(400).json({ error: 'User already in room' });
+    if (!existingMember) {
+      // Add user to room if not already a member
+      const { error: joinError } = await supabase
+        .from('room_members')
+        .insert([{ room_code: roomCode, user_id: userId }]);
+      if (joinError) throw joinError;
     }
 
-    // OPTION B: If you'd prefer to let the user "join" again without error, 
-    // comment out the return above and do something like this:
-    /*
-    if (existingMember) {
-      // Return the current room members or just success
-      const members = await getRoomMembers(roomCode);
-      return res.status(200).json({ message: 'Already in room', members });
-    }
-    */
-
-    // Add user to room
-    const { error: joinError } = await supabase
+    // Fetch updated list of room members
+    const { data: members, error: fetchMembersError } = await supabase
       .from('room_members')
-      .insert([{ room_code: roomCode, user_id: userId }]);
+      .select(`user:users(id, display_name)`)
+      .eq('room_code', roomCode);
 
-    if (joinError) throw joinError;
+    if (fetchMembersError) throw fetchMembersError;
 
-    // Return the updated list of members
-    const members = await getRoomMembers(roomCode);
+    const participantList = members.map((member: any) => ({
+      id: member.user.id,
+      displayName: member.user.display_name,
+    }));
+
     res.status(200).json({
       message: 'Successfully joined room',
-      members,
+      members: participantList,
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

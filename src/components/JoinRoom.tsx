@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { QrCode, Upload } from 'lucide-react';
+import { QrCode } from 'lucide-react';
 
 interface JoinRoomProps {
   onBack: () => void;

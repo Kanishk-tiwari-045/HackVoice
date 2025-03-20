@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { supabase } from '../db'; // Ensure your Supabase client is exported from here
+import { supabase } from '../db'; // Your Supabase client
 import { z } from 'zod';
 
 const router = Router();
@@ -15,22 +15,31 @@ router.get('/:roomCode', async (req, res) => {
   try {
     const { roomCode } = req.params;
 
-    // Fetch messages and join with the users table to get display_name
+    // Join messages with users to get display_name
     const { data: messages, error } = await supabase
       .from('messages')
       .select(`
-        *,
-        user:users(display_name)
+        id,
+        user_id,
+        content,
+        created_at,
+        users(display_name)
       `)
       .eq('room_code', roomCode)
       .order('created_at', { ascending: true });
 
-    if (error) throw error;
+    if (error) {
+      console.error('Supabase Error:', error.message);
+      return res.status(500).json({ error: 'Database query failed' });
+    }
 
-    // Transform each message to include a "username" field from the joined users table
+    // Transform messages to include a "username" field
     const transformedMessages = messages.map((msg: any) => ({
-      ...msg,
-      username: msg.user ? msg.user.display_name : null,
+      id: msg.id,
+      user_id: msg.user_id,
+      content: msg.content,
+      created_at: msg.created_at,
+      display_name: msg.users ? msg.users.display_name || 'Unknown User' : 'Unknown User',
     }));
 
     res.json(transformedMessages);
@@ -50,16 +59,18 @@ router.post('/', async (req, res) => {
       .insert([{ room_code: roomCode, user_id: userId, content }])
       .select();
 
-    if (error) throw error;
+    if (error) {
+      console.error('Supabase Insert Error:', error.message);
+      return res.status(500).json({ error: 'Failed to save message' });
+    }
 
     res.status(201).json(data[0]);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      res.status(400).json({ error: error.errors });
-    } else {
-      console.error('Error creating message:', error);
-      res.status(500).json({ error: 'Failed to create message' });
+      return res.status(400).json({ error: error.errors });
     }
+    console.error('Error creating message:', error);
+    res.status(500).json({ error: 'Failed to create message' });
   }
 });
 

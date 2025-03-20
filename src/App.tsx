@@ -11,7 +11,11 @@ interface User {
 }
 
 function App() {
-  const [user, setUser] = useState<User | null>(null);
+  // Initialize user state from localStorage using a function
+  const [user, setUser] = useState<User | null>(() => {
+    const storedUser = localStorage.getItem('user');
+    return storedUser ? JSON.parse(storedUser) : null;
+  });
 
   // ProtectedRoute ensures that a user is logged in.
   const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -26,6 +30,7 @@ function App() {
 
     const handleLogin = (userData: User) => {
       setUser(userData);
+      localStorage.setItem('user', JSON.stringify(userData));
       navigate('/options');
     };
 
@@ -48,7 +53,7 @@ function App() {
       }
     };
 
-    // Change handleJoinRoom to take no arguments.
+    // Navigate to join room screen.
     const handleJoinRoom = async () => {
       navigate('/join-room');
     };

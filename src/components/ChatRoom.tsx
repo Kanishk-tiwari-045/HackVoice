@@ -1,13 +1,19 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
+import io from 'socket.io-client';
 import { Mic, MicOff, Send, User, Video, VideoOff, Copy } from 'lucide-react';
 
 interface Message {
   id: string;
   user_id: string;
   content: string;
-  created_at: string; // ISO string timestamp
-  display_name: string; // from join query in backend
+  created_at: string;
+  display_name: string;
+}
+
+interface Participant {
+  id: string;
+  displayName: string;
 }
 
 interface ChatRoomProps {
@@ -18,26 +24,59 @@ interface ChatRoomProps {
 
 export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   const { roomCode } = useParams<{ roomCode: string }>();
+
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
-  const [participants, setParticipants] = useState<{ id: string; displayName: string }[]>([]);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [qrCode, setQrCode] = useState<string>('');
   const [isAudioEnabled, setIsAudioEnabled] = useState(false);
   const [isVideoEnabled, setIsVideoEnabled] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  // Function to fetch messages
-  const fetchMessages = useCallback(async () => {
-    try {
-      const res = await fetch(`http://localhost:3000/api/messages/${roomCode}`);
-      const data = await res.json();
-      setMessages(data);
-    } catch (error) {
-      console.error('Error fetching messages:', error);
-    }
-  }, [roomCode]);
+  const [socket, setSocket] = useState<any>(null);
 
-  // Function to fetch participants
+  // 1) Initialize Socket.IO on mount
+  useEffect(() => {
+    const newSocket = io('http://localhost:3000'); // Adjust if needed
+    setSocket(newSocket);
+
+    return () => {
+      newSocket.disconnect();
+    };
+  }, []);
+
+  // 2) Join the room via your backend + Socket.IO
+  const joinRoom = useCallback(async () => {
+    if (!roomCode || !userId) return;
+
+    try {
+      // A) Call your backend to join the room (inserts row into room_members)
+      const resp = await fetch('http://localhost:3000/api/rooms/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, roomCode }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        console.error('Join room error:', data.error || data);
+      } else {
+        console.log('Joined room successfully:', data);
+        // B) Fetch updated participants
+        fetchParticipants();
+      }
+
+      // C) Join the Socket.IO room
+      if (socket) {
+        socket.emit('join_room', roomCode);
+      }
+    } catch (err) {
+      console.error('Error joining room:', err);
+    }
+  }, [roomCode, userId, socket]);
+
+  // 3) Fetch participants from /api/room-members
   const fetchParticipants = useCallback(async () => {
+    if (!roomCode) return;
     try {
       const res = await fetch(`http://localhost:3000/api/room-members/${roomCode}`);
       const data = await res.json();
@@ -47,44 +86,111 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
     }
   }, [roomCode]);
 
-  // Initial fetch on mount
-  useEffect(() => {
-    if (roomCode) {
-      fetchMessages();
-      fetchParticipants();
+  // 4) Fetch initial messages from /api/messages
+  const fetchMessages = useCallback(async () => {
+    if (!roomCode) return;
+    try {
+      const res = await fetch(`http://localhost:3000/api/messages/${roomCode}`);
+      const data = await res.json();
+      setMessages(data);
+    } catch (error) {
+      console.error('Error fetching messages:', error);
     }
-  }, [roomCode, fetchMessages, fetchParticipants]);
+  }, [roomCode]);
 
-  // Poll for participants every 5 seconds
+  // 5) Fetch QR code from /api/rooms/{roomCode}
+  const fetchRoomDetails = useCallback(async () => {
+    if (!roomCode) return;
+    try {
+      const res = await fetch(`http://localhost:3000/api/rooms/${roomCode}`);
+      const data = await res.json();
+      setQrCode(data.qr_code);
+    } catch (error) {
+      console.error('Error fetching room details:', error);
+    }
+  }, [roomCode]);
+
+  // On mount/updates, join the room, fetch messages & participants, etc.
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (roomCode) {
-        fetchParticipants();
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [roomCode, fetchParticipants]);
+    if (roomCode && userId) {
+      joinRoom();         // ensures user is in DB + socket room
+      fetchMessages();    // loads initial messages
+      fetchParticipants(); // loads participants
+      fetchRoomDetails(); // loads QR
+    }
+  }, [roomCode, userId, joinRoom, fetchMessages, fetchParticipants, fetchRoomDetails]);
 
+  // 6) Listen for new chat messages from the server
+  useEffect(() => {
+    if (!socket) return;
+    const handleChatMessage = (data: { userId: string; message: string; timestamp: string }) => {
+      // Attempt to find the user’s display name from participants
+      const participant = participants.find((p) => p.id === data.userId);
+      const displayName = participant ? participant.displayName : data.userId;
+
+      const newMsg: Message = {
+        id: Math.random().toString(36).substring(2),
+        user_id: data.userId,
+        content: data.message,
+        created_at: data.timestamp,
+        display_name: displayName,
+      };
+      setMessages((prev) => [...prev, newMsg]);
+    };
+    socket.on('chat_message', handleChatMessage);
+
+    return () => {
+      socket.off('chat_message', handleChatMessage);
+    };
+  }, [socket, participants]);
+
+  // 7) Listen for presence updates (optional)
+  useEffect(() => {
+    if (!socket) return;
+    const handlePresenceUpdate = (onlineUserIds: string[]) => {
+      console.log('Presence update:', onlineUserIds);
+      // Optionally, you can merge this info with participants
+      // e.g. set an "online" field
+    };
+    socket.on('presence_update', handlePresenceUpdate);
+
+    return () => {
+      socket.off('presence_update', handlePresenceUpdate);
+    };
+  }, [socket]);
+  
+  // 8) Send message via socket (no local duplication)
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!message.trim()) return;
-    // Optionally, send message to backend here
-    const newMsg: Message = {
-      id: Math.random().toString(36).substring(2),
-      user_id: userId,
-      content: message,
-      created_at: new Date().toISOString(),
-      display_name: username,
-    };
-    setMessages((prev) => [...prev, newMsg]);
+    if (!message.trim() || !socket || !roomCode) return;
+
+    // Emit the chat message event with userId
+    socket.emit('chat_message', {
+      roomCode,
+      message,
+      userId,
+    });
+
+    // Clear local input
     setMessage('');
   };
 
+  // 9) Copy QR to clipboard
   const handleCopyRoomCode = async () => {
-    if (roomCode) {
-      await navigator.clipboard.writeText(roomCode);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+    if (qrCode) {
+      try {
+        const res = await fetch(qrCode);
+        const blob = await res.blob();
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            [blob.type]: blob,
+          }),
+        ]);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (err) {
+        console.error('Failed to copy image to clipboard', err);
+      }
     }
   };
 
@@ -105,7 +211,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-lg hover:shadow-xl transition duration-300 ease-in-out transform hover:-translate-y-0.5"
             >
               <Copy className="w-5 h-5" />
-              {copied ? 'Copied!' : 'Copy Code'}
+              {copied ? 'QR Copied!' : 'Copy QR'}
             </button>
             <button
               onClick={() => setIsAudioEnabled(!isAudioEnabled)}
@@ -133,7 +239,6 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
       <main className="flex-1 container mx-auto p-6 flex gap-6">
         {/* Chat Section */}
         <div className="flex-1 glass-panel rounded-xl flex flex-col">
-          {/* Messages */}
           <div className="flex-1 p-4 space-y-4 overflow-y-auto">
             {messages.map((msg) => (
               <div
@@ -156,7 +261,6 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
             ))}
           </div>
 
-          {/* Message Input */}
           <form onSubmit={handleSendMessage} className="p-4 border-t border-secondary">
             <div className="flex gap-2">
               <input
@@ -183,7 +287,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
                   <User className="w-4 h-4 text-primary" />
                 </div>
                 <span className="flex-1">
-                  {p.displayName} {p.id === userId && "(You)"}
+                  {p.displayName} {p.id === userId && '(You)'}
                 </span>
               </div>
             ))}
