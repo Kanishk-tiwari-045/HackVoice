@@ -36,6 +36,7 @@ const roomPresence: { [roomCode: string]: Set<string> } = {};
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
+  // Handle user joining a room
   socket.on('user_connected', (data: { roomCode: string; userId: string }) => {
     const { roomCode, userId } = data;
     socket.join(roomCode);
@@ -47,6 +48,7 @@ io.on('connection', (socket) => {
     console.log(`User ${userId} joined room ${roomCode}`);
   });
 
+  // Fetch message history for a room
   socket.on('fetch_messages', async (roomCode) => {
     try {
       const { data: messages, error } = await supabase
@@ -66,9 +68,12 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Handle incoming chat messages (including speech-to-text transcripts)
   socket.on('chat_message', async (data) => {
     const { roomCode, message, userId } = data;
+  
     try {
+      // Insert the message into the Supabase 'messages' table and retrieve the inserted row
       const { data: insertedMessage, error } = await supabase
         .from('messages')
         .insert([{ room_code: roomCode, user_id: userId, content: message }])
@@ -79,28 +84,35 @@ io.on('connection', (socket) => {
         return;
       }
 
-      io.to(roomCode).emit('chat_message', {
-        userId,
-        message,
-        timestamp: new Date().toISOString(),
-      });
+      // Broadcast the inserted message to all clients in the room
+      if (insertedMessage && insertedMessage.length > 0) {
+        io.to(roomCode).emit('chat_message', {
+          userId: insertedMessage[0].user_id, // Accurate user ID from DB
+          message: insertedMessage[0].content, // The message content (typed or transcribed)
+          timestamp: insertedMessage[0].created_at, // Timestamp from DB
+        });
+      }
     } catch (error) {
       console.error('Error handling chat message:', error);
     }
   });
 
+  // Handle user leaving a room
   socket.on('leave_room', (roomCode) => {
     socket.leave(roomCode);
     console.log(`Socket ${socket.id} left room ${roomCode}`);
   });
 
+  // Handle user disconnection
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
 
+    // Update presence for all rooms the user was in
     for (const roomCode in roomPresence) {
-      roomPresence[roomCode].forEach((userId) => {
+      if (roomPresence[roomCode].has(socket.id)) {
+        roomPresence[roomCode].delete(socket.id);
         io.to(roomCode).emit('presence_update', Array.from(roomPresence[roomCode]));
-      });
+      }
     }
   });
 });
@@ -111,6 +123,7 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
+// Start the server
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
