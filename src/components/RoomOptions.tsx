@@ -1,5 +1,5 @@
 // import React from 'react';
-import { Plus, Users } from 'lucide-react';
+import { Plus, Users } from "lucide-react";
 
 interface RoomOptionsProps {
   onCreateRoom: () => Promise<void>;
@@ -23,7 +23,9 @@ export function RoomOptions({ onCreateRoom, onJoinRoom }: RoomOptionsProps) {
             </div>
             <div className="text-left">
               <h2 className="font-semibold">Create Room</h2>
-              <p className="text-sm text-muted-foreground">Start a new room for others to join</p>
+              <p className="text-sm text-muted-foreground">
+                Start a new room for others to join
+              </p>
             </div>
           </button>
           <button
@@ -35,7 +37,9 @@ export function RoomOptions({ onCreateRoom, onJoinRoom }: RoomOptionsProps) {
             </div>
             <div className="text-left">
               <h2 className="font-semibold">Join Room</h2>
-              <p className="text-sm text-muted-foreground">Enter a room code or scan QR code</p>
+              <p className="text-sm text-muted-foreground">
+                Enter a room code or scan QR code
+              </p>
             </div>
           </button>
         </div>

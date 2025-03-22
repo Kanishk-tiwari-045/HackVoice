@@ -1,9 +1,15 @@
-import React, { useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
-import { Login } from './components/Login';
-import { RoomOptions } from './components/RoomOptions';
-import { JoinRoom } from './components/JoinRoom';
-import { ChatRoom } from './components/ChatRoom';
+import React, { useState } from "react";
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate,
+  useNavigate,
+} from "react-router-dom";
+import { Login } from "./components/Login";
+import { RoomOptions } from "./components/RoomOptions";
+import { JoinRoom } from "./components/JoinRoom";
+import { ChatRoom } from "./components/ChatRoom";
 
 interface User {
   id: string;
@@ -13,7 +19,7 @@ interface User {
 function App() {
   // Initialize user state from localStorage using a function
   const [user, setUser] = useState<User | null>(() => {
-    const storedUser = localStorage.getItem('user');
+    const storedUser = localStorage.getItem("user");
     return storedUser ? JSON.parse(storedUser) : null;
   });
 
@@ -30,32 +36,32 @@ function App() {
 
     const handleLogin = (userData: User) => {
       setUser(userData);
-      localStorage.setItem('user', JSON.stringify(userData));
-      navigate('/options');
+      localStorage.setItem("user", JSON.stringify(userData));
+      navigate("/options");
     };
 
     // Handles room creation by sending the valid user.id as creatorId.
     const handleCreateRoom = async () => {
       try {
-        const response = await fetch('http://localhost:3000/api/rooms/create', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch("http://localhost:3000/api/rooms/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ creatorId: user?.id }),
         });
         const data = await response.json();
         if (!response.ok) {
-          console.error('Error response from server:', data);
-          throw new Error(data.error || 'Failed to create room');
+          console.error("Error response from server:", data);
+          throw new Error(data.error || "Failed to create room");
         }
         navigate(`/chat/${data.roomCode}`);
       } catch (error: any) {
-        console.error('Error creating room:', error);
+        console.error("Error creating room:", error);
       }
     };
 
     // Navigate to join room screen.
     const handleJoinRoom = async () => {
-      navigate('/join-room');
+      navigate("/join-room");
     };
 
     // Used by JoinRoom component after entering a room code.
@@ -64,11 +70,11 @@ function App() {
     };
 
     const handleLeaveRoom = () => {
-      navigate('/options');
+      navigate("/options");
     };
 
     const handleBack = () => {
-      navigate('/options');
+      navigate("/options");
     };
 
     return (
@@ -78,7 +84,10 @@ function App() {
           path="/options"
           element={
             <ProtectedRoute>
-              <RoomOptions onCreateRoom={handleCreateRoom} onJoinRoom={handleJoinRoom} />
+              <RoomOptions
+                onCreateRoom={handleCreateRoom}
+                onJoinRoom={handleJoinRoom}
+              />
             </ProtectedRoute>
           }
         />
@@ -94,7 +103,11 @@ function App() {
           path="/chat/:roomCode"
           element={
             <ProtectedRoute>
-              <ChatRoom username={user?.displayName || ''} userId={user?.id || ''} onLeave={handleLeaveRoom} />
+              <ChatRoom
+                username={user?.displayName || ""}
+                userId={user?.id || ""}
+                onLeave={handleLeaveRoom}
+              />
             </ProtectedRoute>
           }
         />

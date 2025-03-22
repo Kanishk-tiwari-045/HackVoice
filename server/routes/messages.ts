@@ -1,6 +1,6 @@
-import { Router } from 'express';
-import { supabase } from '../db'; // Your Supabase client
-import { z } from 'zod';
+import { Router } from "express";
+import { supabase } from "../db"; // Your Supabase client
+import { z } from "zod";
 
 const router = Router();
 
@@ -11,26 +11,28 @@ const messageSchema = z.object({
 });
 
 // GET messages for a given room code
-router.get('/:roomCode', async (req, res) => {
+router.get("/:roomCode", async (req, res) => {
   try {
     const { roomCode } = req.params;
 
     // Join messages with users to get display_name
     const { data: messages, error } = await supabase
-      .from('messages')
-      .select(`
+      .from("messages")
+      .select(
+        `
         id,
         user_id,
         content,
         created_at,
         users(display_name)
-      `)
-      .eq('room_code', roomCode)
-      .order('created_at', { ascending: true });
+      `
+      )
+      .eq("room_code", roomCode)
+      .order("created_at", { ascending: true });
 
     if (error) {
-      console.error('Supabase Error:', error.message);
-      return res.status(500).json({ error: 'Database query failed' });
+      console.error("Supabase Error:", error.message);
+      return res.status(500).json({ error: "Database query failed" });
     }
 
     // Transform messages to include a "username" field
@@ -39,45 +41,47 @@ router.get('/:roomCode', async (req, res) => {
       user_id: msg.user_id,
       content: msg.content,
       created_at: msg.created_at,
-      display_name: msg.users ? msg.users.display_name || 'Unknown User' : 'Unknown User',
+      display_name: msg.users
+        ? msg.users.display_name || "Unknown User"
+        : "Unknown User",
     }));
 
     res.json(transformedMessages);
   } catch (error) {
-    console.error('Error fetching messages:', error);
-    res.status(500).json({ error: 'Failed to fetch messages' });
+    console.error("Error fetching messages:", error);
+    res.status(500).json({ error: "Failed to fetch messages" });
   }
 });
 
 // DELETE messages for a given room code
-router.delete('/:roomCode', async (req, res) => {
+router.delete("/:roomCode", async (req, res) => {
   const { roomCode } = req.params;
   try {
     const { data, error } = await supabase
-      .from('messages')
+      .from("messages")
       .delete()
-      .eq('room_code', roomCode);
+      .eq("room_code", roomCode);
     if (error) throw error;
     res.status(200).json(data);
   } catch (err) {
-    console.error('Error deleting messages:', err);
-    res.status(500).json({ error: 'Failed to delete messages' });
+    console.error("Error deleting messages:", err);
+    res.status(500).json({ error: "Failed to delete messages" });
   }
 });
 
 // POST a new message
-router.post('/', async (req, res) => {
+router.post("/", async (req, res) => {
   try {
     const { roomCode, userId, content } = messageSchema.parse(req.body);
 
     const { data, error } = await supabase
-      .from('messages')
+      .from("messages")
       .insert([{ room_code: roomCode, user_id: userId, content }])
       .select();
 
     if (error) {
-      console.error('Supabase Insert Error:', error.message);
-      return res.status(500).json({ error: 'Failed to save message' });
+      console.error("Supabase Insert Error:", error.message);
+      return res.status(500).json({ error: "Failed to save message" });
     }
 
     res.status(201).json(data[0]);
@@ -85,8 +89,8 @@ router.post('/', async (req, res) => {
     if (error instanceof z.ZodError) {
       return res.status(400).json({ error: error.errors });
     }
-    console.error('Error creating message:', error);
-    res.status(500).json({ error: 'Failed to create message' });
+    console.error("Error creating message:", error);
+    res.status(500).json({ error: "Failed to create message" });
   }
 });
 
