@@ -49,7 +49,10 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [qrCode, setQrCode] = useState<string>("");
-  const [isAudioEnabled, setIsAudioEnabled] = useState(false);
+  const [isAudioEnabled, setIsAudioEnabled] = useState(() => {
+    const saved = localStorage.getItem("isAudioEnabled");
+    return saved ? JSON.parse(saved) : false;
+  });
   const [copied, setCopied] = useState(false);
   const [socket, setSocket] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -71,9 +74,19 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
     };
   }, []);
 
+  const participantsRef = useRef<Participant[]>([]);
+    useEffect(() => {
+      participantsRef.current = participants;
+    }, [participants]);
+
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    localStorage.setItem("isAudioEnabled", JSON.stringify(isAudioEnabled));
+  }, [isAudioEnabled]);
 
   const leaveRoom = async () => {
     if (!roomCode || !userId) return;
@@ -180,25 +193,22 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
 
   useEffect(() => {
     if (isAudioEnabled && socket) {
-      navigator.mediaDevices
-        .getUserMedia({ audio: true })
+      navigator.mediaDevices.getUserMedia({ audio: true })
         .then((stream) => {
           console.log("Microphone stream acquired:", stream);
-          // For each participant that doesn't already have a peer connection, create one:
           participants.forEach((p) => {
-            if (!peerConnectionsRef.current[p.id]) {
+            // Only create a new connection if one does not already exist.
+            if (p.id !== userId && !peerConnectionsRef.current[p.id]) {
               const pc = createPeerConnection(p.id);
-              stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-              // Set the connection in the ref (this won’t trigger re-renders)
+              stream.getTracks().forEach((track) => {
+                pc.addTrack(track, stream);
+              });
+              // Save the connection in the ref.
               peerConnectionsRef.current[p.id] = pc;
               pc.createOffer()
                 .then((offer) => {
                   pc.setLocalDescription(offer);
-                  socket.emit("offer", {
-                    fromUserId: userId,
-                    targetUserId: p.id,
-                    offer,
-                  });
+                  socket.emit("offer", { fromUserId: userId, targetUserId: p.id, offer });
                 })
                 .catch((err) => console.error("Error creating offer:", err));
             }
@@ -206,15 +216,17 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
         })
         .catch((err) => console.error("Error accessing microphone:", err));
     } else {
+      // When audio is disabled, close all peer connections.
       Object.values(peerConnectionsRef.current).forEach((pc) => {
         if (typeof pc.close === "function") {
           pc.close();
         }
       });
-      // setPeerConnections({});
+      // Optionally clear the ref (if you want to reset connections)
+      peerConnectionsRef.current = {};
       setRemoteStreams({});
     }
-  }, [isAudioEnabled, participants, userId, socket, peerConnectionsRef]);
+  }, [isAudioEnabled, participants, userId, socket]);  
 
   // Handle WebRTC signaling
   useEffect(() => {
@@ -267,12 +279,13 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
       const recog = new SpeechRecognition();
       recog.continuous = true;
       recog.interimResults = true;
+      recog.maxAlternatives = 5;
       recog.lang = "en-US";
 
       recog.onresult = (event: any) => {
         let interimTranscript = "";
         let finalTranscript = "";
-
+      
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           if (event.results[i].isFinal) {
             finalTranscript += event.results[i][0].transcript;
@@ -280,24 +293,33 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
             interimTranscript += event.results[i][0].transcript;
           }
         }
-
+      
         if (interimTranscript) {
           setSubtitles((prev) => ({ ...prev, [userId]: interimTranscript }));
         }
-
+      
         if (finalTranscript) {
-          socket.emit("chat_message", {
-            roomCode,
-            message: finalTranscript,
-            userId,
-          });
+          // Update local messages immediately
+          const newMsg: Message = {
+            id: crypto.randomUUID(),
+            user_id: userId,
+            content: finalTranscript,
+            created_at: new Date().toISOString(),
+            display_name: username,
+          };
+          setMessages((prev) => [...prev, newMsg]);
+      
+          // Emit the chat message to the server
+          socket.emit("chat_message", { roomCode, message: finalTranscript, userId });
+          
+          // Remove the subtitle for the current user
           setSubtitles((prev) => {
-            const newSubtitles = { ...prev };
-            delete newSubtitles[userId];
-            return newSubtitles;
+            const newSubs = { ...prev };
+            delete newSubs[userId];
+            return newSubs;
           });
         }
-      };
+      };      
 
       recog.onerror = (event: any) =>
         console.error("Speech recognition error:", event.error);
@@ -390,31 +412,27 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   }, [roomCode, userId]); // Remove functions like joinRoom, etc., if they are memoized properly
 
   useEffect(() => {
-    if (!socket) return;
-    const handleChatMessage = (data: {
-      userId: string;
-      message: string;
-      timestamp: string;
-    }) => {
-      // (Option 1) If you still need the latest participants, consider storing them in a ref
-      // or use a functional update (the displayName might be stale but can be updated on re-render).
-      const displayName =
-        participants.find((p) => p.id === data.userId)?.displayName ||
-        "Anonymous";
-      const newMsg: Message = {
-        id: crypto.randomUUID(),
-        user_id: data.userId,
-        content: data.message,
-        created_at: data.timestamp,
-        display_name: displayName,
-      };
-      setMessages((prevMessages) => [...prevMessages, newMsg]);
+  if (!socket) return;
+  const handleChatMessage = (data: { userId: string; message: string; timestamp: string }) => {
+    // Use the latest participants from the ref:
+    const displayName =
+      participantsRef.current.find((p) => p.id === data.userId)?.displayName ||
+      "Anonymous";
+    const newMsg: Message = {
+      id: crypto.randomUUID(),
+      user_id: data.userId,
+      content: data.message,
+      created_at: data.timestamp,
+      display_name: displayName,
     };
-    socket.on("chat_message", handleChatMessage);
-    return () => {
-      socket.off("chat_message", handleChatMessage);
-    };
-  }, [socket]);
+    setMessages((prev) => [...prev, newMsg]);
+  };
+
+  socket.on("chat_message", handleChatMessage);
+  return () => {
+    socket.off("chat_message", handleChatMessage);
+  };
+}, [socket]);
 
   // Listen for presence updates
   useEffect(() => {
@@ -610,17 +628,17 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
         </div>
         {/* Remote Audio Streams (hidden) */}
         <div className="hidden">
-          {Object.entries(remoteStreams).map(([peerId, stream]) => (
-            <audio
-              key={peerId}
-              autoPlay
-              ref={(audio) => {
-                if (audio && stream) {
-                  audio.srcObject = stream;
-                }
-              }}
-            />
-          ))}
+        {Object.entries(remoteStreams).map(([peerId, stream]) => (
+          <audio
+            key={peerId}
+            autoPlay
+            ref={(audio) => {
+              if (audio && stream) {
+                audio.srcObject = stream;
+              }
+            }}
+          />
+        ))}
         </div>
       </main>
     </div>
