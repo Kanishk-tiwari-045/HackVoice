@@ -171,6 +171,23 @@ async function getRoomMembers(roomCode: string) {
     id: member.user.id,
     displayName: member.user.display_name,
   }));
-}
+  }
 
+  // DELETE /api/rooms/:roomCode
+  router.delete('/:roomCode', async (req, res) => {
+    const { roomCode } = req.params;
+    try {
+      const { data, error } = await supabase
+        .from('rooms')
+        .delete()
+        .eq('code', roomCode);
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+      return res.status(200).json(data);
+    } catch (err) {
+      return res.status(400).json({ error: err });
+    }
+  });
+  
 export const roomsRouter = router;

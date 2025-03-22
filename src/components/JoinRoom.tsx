@@ -9,19 +9,36 @@ export function JoinRoom({ onBack, onJoin }: JoinRoomProps) {
   const [roomCode, setRoomCode] = useState('');
   const [error, setError] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (roomCode.trim().length !== 6) {
       setError('Please enter a valid room code');
       return;
     }
-    onJoin(roomCode.toUpperCase());
-  };
+    const code = roomCode.toUpperCase();
+    const isValid = await validateRoomCode(code);
+    if (isValid) {
+      onJoin(code);
+    } else {
+      setError('Invalid: Room code does not exist.');
+    }
+  };  
 
+  const validateRoomCode = async (code: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`http://localhost:3000/api/rooms/${code}`);
+      // If the room does not exist, the API should return a non-200 status
+      if (!res.ok) return false;
+      const data = await res.json();
+      return !!data;
+    } catch (error) {
+      console.error('Room code validation error:', error);
+      return false;
+    }
+  };
+  
   const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
-    // Prevent default paste behavior
     e.preventDefault();
-    
     const clipboardItems = e.clipboardData.items;
     let file: File | null = null;
     for (let i = 0; i < clipboardItems.length; i++) {
@@ -36,7 +53,12 @@ export function JoinRoom({ onBack, onJoin }: JoinRoomProps) {
         const scannedCode = await QrScanner.scanImage(file);
         const code = scannedCode.toUpperCase();
         if (code && code.length === 6) {
-          onJoin(code);
+          const isValid = await validateRoomCode(code);
+          if (isValid) {
+            onJoin(code);
+          } else {
+            setError('Invalid: Room code does not exist.');
+          }
         } else {
           setError('Scanned QR code does not represent a valid room code.');
         }
@@ -47,8 +69,7 @@ export function JoinRoom({ onBack, onJoin }: JoinRoomProps) {
     } else {
       setError('No image found in paste data.');
     }
-  };
-  
+  };  
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">

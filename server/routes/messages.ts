@@ -49,6 +49,22 @@ router.get('/:roomCode', async (req, res) => {
   }
 });
 
+// DELETE messages for a given room code
+router.delete('/:roomCode', async (req, res) => {
+  const { roomCode } = req.params;
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .delete()
+      .eq('room_code', roomCode);
+    if (error) throw error;
+    res.status(200).json(data);
+  } catch (err) {
+    console.error('Error deleting messages:', err);
+    res.status(500).json({ error: 'Failed to delete messages' });
+  }
+});
+
 // POST a new message
 router.post('/', async (req, res) => {
   try {

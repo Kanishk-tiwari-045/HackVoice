@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
-import { Mic, MicOff, Send, User, Video, VideoOff, Copy } from 'lucide-react';
+import { Mic, MicOff, Send, User, Copy } from 'lucide-react';
 
 // Interfaces
 interface Message {
@@ -50,9 +50,9 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [qrCode, setQrCode] = useState<string>('');
   const [isAudioEnabled, setIsAudioEnabled] = useState(false);
-  const [isVideoEnabled, setIsVideoEnabled] = useState(false);
   const [copied, setCopied] = useState(false);
   const [socket, setSocket] = useState<any>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // WebRTC and Speech-to-Text state variables
   const [peerConnections, setPeerConnections] = useState<{ [key: string]: RTCPeerConnection }>({});
@@ -69,6 +69,72 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
     };
   }, []);
 
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);  
+
+  const leaveRoom = async () => {
+    if (!roomCode || !userId) return;
+    try {
+      // Remove the user from room_members
+      const resp = await fetch(`http://localhost:3000/api/room-members/${roomCode}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+      if (!resp.ok) {
+        console.error('Failed to leave room:', await resp.text());
+        return;
+      }
+      console.log('Left room successfully.');
+  
+      // Check if the room_members table is now empty for that room
+      const resMembers = await fetch(`http://localhost:3000/api/room-members/${roomCode}`);
+      const membersData = await resMembers.json();
+      if (Array.isArray(membersData) && membersData.length === 0) {
+        // Delete the room from the rooms table
+        const resDeleteRoom = await fetch(`http://localhost:3000/api/rooms/${roomCode}`, {
+          method: 'DELETE',
+        });
+        if (!resDeleteRoom.ok) {
+          console.error('Failed to delete room:', await resDeleteRoom.text());
+        } else {
+          console.log('Room deleted successfully.');
+        }
+        // Delete all messages associated with that room
+        const resDeleteMessages = await fetch(`http://localhost:3000/api/messages/${roomCode}`, {
+          method: 'DELETE',
+        });
+        if (!resDeleteMessages.ok) {
+          console.error('Failed to delete messages:', await resDeleteMessages.text());
+        } else {
+          console.log('Messages deleted successfully.');
+        }
+      }
+    } catch (error) {
+      console.error('Error leaving room:', error);
+    }
+  };  
+  
+  useEffect(() => {
+    if (!socket) return;
+  
+    const handleParticipantJoined = (data: { participant: Participant }) => {
+      setParticipants((prev) => {
+        if (!prev.find((p) => p.id === data.participant.id)) {
+          return [...prev, data.participant];
+        }
+        return prev;
+      });
+      // Optionally, re-run your logic to establish a peer connection with the new participant.
+    };
+  
+    socket.on('participant_joined', handleParticipantJoined);
+    return () => {
+      socket.off('participant_joined', handleParticipantJoined);
+    };
+  }, [socket]);
+  
   // Function to create a WebRTC peer connection
   const createPeerConnection = (targetUserId: string): RTCPeerConnection => {
     const pc = new RTCPeerConnection();
@@ -84,15 +150,14 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
     return pc;
   };
 
-  // Handle audio stream when mic is enabled
   useEffect(() => {
     if (isAudioEnabled && socket) {
-      navigator.mediaDevices
-        .getUserMedia({ audio: true })
+      navigator.mediaDevices.getUserMedia({ audio: true })
         .then((stream) => {
           console.log('Microphone stream acquired:', stream);
+          // For each participant that doesn't already have a peer connection, create one:
           participants.forEach((p) => {
-            if (p.id !== userId) {
+            if (p.id !== userId && !peerConnections[p.id]) {
               const pc = createPeerConnection(p.id);
               stream.getTracks().forEach((track) => pc.addTrack(track, stream));
               setPeerConnections((prev) => ({ ...prev, [p.id]: pc }));
@@ -111,7 +176,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
       setPeerConnections({});
       setRemoteStreams({});
     }
-  }, [isAudioEnabled, participants, userId, socket]);
+  }, [isAudioEnabled, participants, userId, socket, peerConnections]);  
 
   // Handle WebRTC signaling
   useEffect(() => {
@@ -357,32 +422,27 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
           </div>
           <div className="flex items-center gap-4">
             <button
-              onClick={handleCopyRoomCode}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-                copied ? 'bg-green-500' : 'bg-gradient-to-r from-indigo-500 to-purple-500'
-              } text-white shadow-lg hover:shadow-xl transition-transform duration-300 transform hover:-translate-y-0.5`}
-            >
-              <Copy className="w-5 h-5" />
-              {copied ? 'Copied!' : 'Copy QR'}
-            </button>
-            <button
               onClick={() => setIsAudioEnabled(!isAudioEnabled)}
-              className={`p-2 rounded-full ${
+              className={`p-2 rounded-lg ${
                 isAudioEnabled ? 'bg-primary/30 text-primary' : 'bg-secondary/30 text-muted-foreground'
               } hover:bg-primary/20 transition`}
             >
               {isAudioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
             </button>
             <button
-              onClick={() => setIsVideoEnabled(!isVideoEnabled)}
-              className={`p-2 rounded-full ${
-                isVideoEnabled ? 'bg-primary/30 text-primary' : 'bg-secondary/30 text-muted-foreground'
-              } hover:bg-primary/20 transition`}
+              onClick={handleCopyRoomCode}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
+                copied ? 'bg-purple-600' : 'bg-gradient-to-r from-indigo-500 to-purple-500'
+              } text-white shadow-lg hover:shadow-xl transition-transform font-semibold duration-300 transform hover:brightness-90`}
             >
-              {isVideoEnabled ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
+              <Copy className="w-5 h-5" />
+              {copied ? 'Copied!' : 'Copy QR'}
             </button>
             <button
-              onClick={onLeave}
+              onClick={() => {
+                leaveRoom();
+                onLeave();
+              }}
               className="button-gradient py-2 px-4 rounded-lg text-white font-semibold hover:brightness-110 transition"
             >
               Leave Room
@@ -391,8 +451,8 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
         </div>
       </header>
       <main className="flex-1 container mx-auto p-6 flex gap-6">
-        <div className="flex-1 glass-panel rounded-xl flex flex-col min-h-[400px]">
-          <div className="flex-1 p-4 space-y-4 overflow-y-auto">
+        <div className="flex-1 glass-panel rounded-lg flex flex-col h-[600px]">
+        <div className="flex-1 p-4 space-y-4 overflow-y-auto rounded-lg scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-300">
             <div className="mb-4">
               {Object.entries(subtitles).map(([speakerId, transcript]) => (
                 <p key={speakerId} className="text-sm text-gray-500">
@@ -401,28 +461,25 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
               ))}
             </div>
             {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`flex items-start gap-3 ${msg.user_id === userId ? 'flex-row-reverse' : ''}`}
-              >
-                <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
-                  <User className="w-4 h-4" />
-                </div>
-                <div
-                  className={`glass-panel rounded-lg p-3 max-w-[70%] ${
-                    msg.user_id === userId ? 'bg-primary/20' : ''
-                  }`}
-                >
-                  <div className="flex items-baseline gap-2">
-                    <span className="font-medium text-sm">{msg.display_name}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(msg.created_at).toLocaleTimeString()}
-                    </span>
-                  </div>
-                  <p>{msg.content}</p>
-                </div>
+            <div
+              key={msg.id}
+              className={`flex items-start gap-3 ${msg.user_id === userId ? 'flex-row-reverse' : ''}`}
+            >
+              <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
+                <User className="w-4 h-4" />
               </div>
+              <div className={`glass-panel rounded-lg p-3 max-w-[70%] ${msg.user_id === userId ? 'bg-primary/20' : ''}`}>
+                <div className="flex items-baseline gap-2">
+                  <span className="font-medium text-sm">{msg.display_name}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(msg.created_at).toLocaleTimeString()}
+                  </span>
+                </div>
+                <p>{msg.content}</p>
+              </div>
+            </div>
             ))}
+            <div ref={messagesEndRef} />
           </div>
           {Object.entries(remoteStreams).map(([userId, stream]) => (
             <audio
@@ -436,7 +493,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
               autoPlay
             />
           ))}
-          <form onSubmit={handleSendMessage} className="p-4 border-t border-secondary">
+          <form onSubmit={handleSendMessage} className="border-t border-secondary p-4">
             <div className="flex gap-2">
               <input
                 type="text"
@@ -445,11 +502,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
                 placeholder="Type a message..."
                 className="flex-1 rounded-lg input-style p-2"
               />
-              <button
-                type="submit"
-                className="button-gradient p-2 rounded-lg text-white"
-                disabled={!message.trim()}
-              >
+              <button type="submit" className="button-gradient p-2 rounded-lg text-white" disabled={!message.trim()}>
                 <Send className="w-5 h-5" />
               </button>
             </div>
@@ -469,6 +522,20 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
               </div>
             ))}
           </div>
+        </div>
+        {/* Remote Audio Streams (hidden) */}
+        <div className="hidden">
+          {Object.entries(remoteStreams).map(([peerId, stream]) => (
+            <audio
+              key={peerId}
+              autoPlay
+              ref={(audio) => {
+                if (audio && stream) {
+                  audio.srcObject = stream;
+                }
+              }}
+            />
+          ))}
         </div>
       </main>
     </div>
