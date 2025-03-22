@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { QrCode } from 'lucide-react';
-
+import QrScanner from 'qr-scanner';
 interface JoinRoomProps {
   onBack: () => void;
   onJoin: (roomCode: string) => void;
@@ -18,6 +17,38 @@ export function JoinRoom({ onBack, onJoin }: JoinRoomProps) {
     }
     onJoin(roomCode.toUpperCase());
   };
+
+  const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
+    // Prevent default paste behavior
+    e.preventDefault();
+    
+    const clipboardItems = e.clipboardData.items;
+    let file: File | null = null;
+    for (let i = 0; i < clipboardItems.length; i++) {
+      if (clipboardItems[i].kind === 'file') {
+        file = clipboardItems[i].getAsFile();
+        break;
+      }
+    }
+    
+    if (file) {
+      try {
+        const scannedCode = await QrScanner.scanImage(file);
+        const code = scannedCode.toUpperCase();
+        if (code && code.length === 6) {
+          onJoin(code);
+        } else {
+          setError('Scanned QR code does not represent a valid room code.');
+        }
+      } catch (err) {
+        console.error('QR scan failed:', err);
+        setError('Failed to decode QR code. Please try another image.');
+      }
+    } else {
+      setError('No image found in paste data.');
+    }
+  };
+  
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
@@ -57,18 +88,18 @@ export function JoinRoom({ onBack, onJoin }: JoinRoomProps) {
               <span className="bg-background px-2 text-muted-foreground">or</span>
             </div>
           </div>
-
-          <button
-            type="button"
-            className="glass-panel w-full py-8 rounded-lg border-2 border-dashed border-secondary hover:bg-secondary/50 transition-colors flex flex-col items-center gap-2"
-          >
-            <QrCode className="w-8 h-8 text-primary" />
-            <div className="text-center">
-              <p className="font-medium">Scan QR Code</p>
-              <p className="text-sm text-muted-foreground">Upload or use camera</p>
+          <div className="my-4">
+            <label className="block text-center mb-2 font-medium text-primary">
+              Paste QR Code Image
+            </label>
+            <div
+              onPaste={handlePaste}
+              className="mx-auto border-2 border-dashed border-secondary rounded-lg p-4 text-center cursor-pointer bg-gray-100 hover:bg-gray-200 transition-colors"
+              style={{ width: '100%' }}
+            >
+              <p className="text-sm text-muted-foreground">Click here and paste (Ctrl+V) your image</p>
             </div>
-          </button>
-
+          </div>
           <div className="space-y-4">
             <button
               type="submit"

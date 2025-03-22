@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
-import { Mic, MicOff, Send, User, Copy } from 'lucide-react';
+import { Mic, MicOff, Send, User, Video, VideoOff, Copy } from 'lucide-react';
 
 // Interfaces
 interface Message {
@@ -23,24 +23,23 @@ interface ChatRoomProps {
   onLeave: () => void;
 }
 
-  // Define interfaces for socket event data
-  interface OfferData {
-    fromUserId: string;
-    targetUserId: string;
-    offer: RTCSessionDescriptionInit;
-  }
-  
-  interface AnswerData {
-    fromUserId: string;
-    targetUserId: string;
-    answer: RTCSessionDescriptionInit;
-  }
-  
-  interface IceCandidateData {
-    fromUserId: string;
-    targetUserId: string;
-    candidate: RTCIceCandidate;
-  }
+interface OfferData {
+  fromUserId: string;
+  targetUserId: string;
+  offer: RTCSessionDescriptionInit;
+}
+
+interface AnswerData {
+  fromUserId: string;
+  targetUserId: string;
+  answer: RTCSessionDescriptionInit;
+}
+
+interface IceCandidateData {
+  fromUserId: string;
+  targetUserId: string;
+  candidate: RTCIceCandidate;
+}
 
 export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   const { roomCode } = useParams<{ roomCode: string }>();
@@ -51,6 +50,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [qrCode, setQrCode] = useState<string>('');
   const [isAudioEnabled, setIsAudioEnabled] = useState(false);
+  const [isVideoEnabled, setIsVideoEnabled] = useState(false);
   const [copied, setCopied] = useState(false);
   const [socket, setSocket] = useState<any>(null);
 
@@ -60,96 +60,100 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   const [subtitles, setSubtitles] = useState<{ [key: string]: string }>({});
   const [recognition, setRecognition] = useState<any>(null);
 
-  // **1) Initialize Socket.IO on mount**
+  // Initialize Socket.IO on mount
   useEffect(() => {
-    const newSocket = io('http://localhost:3000'); // Adjust URL if needed
+    const newSocket = io('http://localhost:3000');
     setSocket(newSocket);
-
     return () => {
       newSocket.disconnect();
     };
   }, []);
 
-// Function to create a WebRTC peer connection
-const createPeerConnection = (targetUserId: string): RTCPeerConnection => {
-  const pc = new RTCPeerConnection();
-  pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      socket.emit('ice_candidate', { targetUserId, candidate: event.candidate } as IceCandidateData);
-    }
+  // Function to create a WebRTC peer connection
+  const createPeerConnection = (targetUserId: string): RTCPeerConnection => {
+    const pc = new RTCPeerConnection();
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket.emit('ice_candidate', { fromUserId: userId, targetUserId, candidate: event.candidate } as IceCandidateData);
+      }
+    };
+    pc.ontrack = (event) => {
+      console.log(`Received stream from ${targetUserId}`, event.streams[0]);
+      setRemoteStreams((prev) => ({ ...prev, [targetUserId]: event.streams[0] }));
+    };
+    return pc;
   };
-  pc.ontrack = (event) => {
-    setRemoteStreams((prev) => ({ ...prev, [targetUserId]: event.streams[0] }));
-  };
-  return pc;
-};
 
-// Handle audio stream when mic is enabled
-useEffect(() => {
-  if (isAudioEnabled && socket) {
-    navigator.mediaDevices
-      .getUserMedia({ audio: true })
-      .then((stream) => {
-        participants.forEach((p) => {
-          if (p.id !== userId) {
-            const pc = createPeerConnection(p.id);
-            stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-            setPeerConnections((prev) => ({ ...prev, [p.id]: pc }));
-            pc.createOffer()
-              .then((offer) => {
-                pc.setLocalDescription(offer);
-                socket.emit('offer', { targetUserId: p.id, offer } as OfferData);
-              })
-              .catch((err) => console.error('Error creating offer:', err));
-          }
-        });
-      })
-      .catch((err) => console.error('Error accessing microphone:', err));
-  } else {
-    Object.values(peerConnections).forEach((pc) => pc.close());
-    setPeerConnections({});
-    setRemoteStreams({});
-  }
-}, [isAudioEnabled, participants, userId, socket]);
-
-// Handle WebRTC signaling
-useEffect(() => {
-  if (!socket) return;
-
-  socket.on('offer', async (data: OfferData) => {
-    const { fromUserId, offer } = data;
-    const pc = createPeerConnection(fromUserId);
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    socket.emit('answer', { targetUserId: fromUserId, answer } as AnswerData);
-    setPeerConnections((prev) => ({ ...prev, [fromUserId]: pc }));
-  });
-
-  socket.on('answer', async (data: AnswerData) => {
-    const { fromUserId, answer } = data;
-    const pc = peerConnections[fromUserId];
-    if (pc) {
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+  // Handle audio stream when mic is enabled
+  useEffect(() => {
+    if (isAudioEnabled && socket) {
+      navigator.mediaDevices
+        .getUserMedia({ audio: true })
+        .then((stream) => {
+          console.log('Microphone stream acquired:', stream);
+          participants.forEach((p) => {
+            if (p.id !== userId) {
+              const pc = createPeerConnection(p.id);
+              stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+              setPeerConnections((prev) => ({ ...prev, [p.id]: pc }));
+              pc.createOffer()
+                .then((offer) => {
+                  pc.setLocalDescription(offer);
+                  socket.emit('offer', { fromUserId: userId, targetUserId: p.id, offer } as OfferData);
+                })
+                .catch((err) => console.error('Error creating offer:', err));
+            }
+          });
+        })
+        .catch((err) => console.error('Error accessing microphone:', err));
+    } else {
+      Object.values(peerConnections).forEach((pc) => pc.close());
+      setPeerConnections({});
+      setRemoteStreams({});
     }
-  });
+  }, [isAudioEnabled, participants, userId, socket]);
 
-  socket.on('ice_candidate', async (data: IceCandidateData) => {
-    const { fromUserId, candidate } = data;
-    const pc = peerConnections[fromUserId];
-    if (pc) {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
-    }
-  });
+  // Handle WebRTC signaling
+  useEffect(() => {
+    if (!socket) return;
 
-  return () => {
-    socket.off('offer');
-    socket.off('answer');
-    socket.off('ice_candidate');
-  };
-}, [socket, peerConnections, userId]);
+    socket.on('offer', async (data: OfferData) => {
+      console.log('Received offer from', data.fromUserId);
+      const { fromUserId, offer } = data;
+      const pc = createPeerConnection(fromUserId);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('answer', { fromUserId: userId, targetUserId: fromUserId, answer } as AnswerData);
+      setPeerConnections((prev) => ({ ...prev, [fromUserId]: pc }));
+    });
 
-  // **4) Initialize speech recognition**
+    socket.on('answer', async (data: AnswerData) => {
+      console.log('Received answer from', data.fromUserId);
+      const { fromUserId, answer } = data;
+      const pc = peerConnections[fromUserId];
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      }
+    });
+
+    socket.on('ice_candidate', async (data: IceCandidateData) => {
+      console.log('Received ICE candidate from', data.fromUserId);
+      const { fromUserId, candidate } = data;
+      const pc = peerConnections[fromUserId];
+      if (pc) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    });
+
+    return () => {
+      socket.off('offer');
+      socket.off('answer');
+      socket.off('ice_candidate');
+    };
+  }, [socket, peerConnections, userId]);
+
+  // Initialize speech recognition
   useEffect(() => {
     if (isAudioEnabled && 'webkitSpeechRecognition' in window) {
       const SpeechRecognition = (window as any).webkitSpeechRecognition;
@@ -197,10 +201,9 @@ useEffect(() => {
     }
   }, [isAudioEnabled, userId, roomCode, socket]);
 
-  // **5) Join the room via backend + Socket.IO**
+  // Join the room via backend + Socket.IO
   const joinRoom = useCallback(async () => {
     if (!roomCode || !userId) return;
-
     try {
       const resp = await fetch('http://localhost:3000/api/rooms/join', {
         method: 'POST',
@@ -214,7 +217,6 @@ useEffect(() => {
         console.log('Joined room successfully:', data);
         fetchParticipants();
       }
-
       if (socket) {
         socket.emit('join_room', roomCode);
       }
@@ -223,7 +225,7 @@ useEffect(() => {
     }
   }, [roomCode, userId, socket]);
 
-  // **6) Fetch participants**
+  // Fetch participants
   const fetchParticipants = useCallback(async () => {
     if (!roomCode) return;
     try {
@@ -235,7 +237,7 @@ useEffect(() => {
     }
   }, [roomCode]);
 
-  // **7) Fetch initial messages**
+  // Fetch initial messages
   const fetchMessages = useCallback(async () => {
     if (!roomCode) return;
     try {
@@ -247,7 +249,7 @@ useEffect(() => {
     }
   }, [roomCode]);
 
-  // **8) Fetch QR code**
+  // Fetch QR code
   const fetchRoomDetails = useCallback(async () => {
     if (!roomCode) return;
     try {
@@ -259,7 +261,7 @@ useEffect(() => {
     }
   }, [roomCode]);
 
-  // **9) On mount, join room and fetch data**
+  // On mount, join room and fetch data
   useEffect(() => {
     if (roomCode && userId) {
       fetchMessages();
@@ -269,14 +271,13 @@ useEffect(() => {
     }
   }, [roomCode, userId, joinRoom, fetchMessages, fetchParticipants, fetchRoomDetails]);
 
-  // **10) Listen for new chat messages**
+  // Listen for new chat messages
   useEffect(() => {
     if (!socket) return;
 
     const handleChatMessage = (data: { userId: string; message: string; timestamp: string }) => {
       const participant = participants.find((p) => p.id === data.userId);
       const displayName = participant?.displayName || 'Anonymous';
-
       const newMsg: Message = {
         id: crypto.randomUUID(),
         user_id: data.userId,
@@ -284,51 +285,47 @@ useEffect(() => {
         created_at: data.timestamp,
         display_name: displayName,
       };
-
       setMessages((prevMessages) => [...prevMessages, newMsg]);
     };
 
     socket.on('chat_message', handleChatMessage);
-
     return () => {
       socket.off('chat_message', handleChatMessage);
     };
   }, [socket, participants]);
 
-  // **11) Listen for presence updates (optional)**
+  // Listen for presence updates
   useEffect(() => {
     if (!socket) return;
     const handlePresenceUpdate = (onlineUserIds: string[]) => {
       console.log('Presence update:', onlineUserIds);
     };
     socket.on('presence_update', handlePresenceUpdate);
-
     return () => {
       socket.off('presence_update', handlePresenceUpdate);
     };
   }, [socket]);
 
-  // **12) Send message via socket**
+  // Send message via socket
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (message.trim()) {
       setMessages((prev) => [
         ...prev,
         {
-          id: Math.random().toString(36).substring(2), // Temporary ID
+          id: Math.random().toString(36).substring(2),
           user_id: userId,
           content: message,
           created_at: new Date().toISOString(),
           display_name: username,
         },
       ]);
-
       socket.emit('chat_message', { roomCode, message, userId });
       setMessage('');
     }
   };
 
-  // **13) Copy QR to clipboard**
+  // Copy QR to clipboard
   const handleCopyRoomCode = async () => {
     if (qrCode) {
       try {
@@ -347,10 +344,9 @@ useEffect(() => {
     }
   };
 
-  // **Render**
+  // Render
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Header */}
       <header className="glass-panel py-4 px-6 shadow-md">
         <div className="container mx-auto flex items-center justify-between">
           <div>
@@ -360,22 +356,30 @@ useEffect(() => {
             <p className="text-sm text-gray-400">Connected as {userId}</p>
           </div>
           <div className="flex items-center gap-4">
-          <button
+            <button
+              onClick={handleCopyRoomCode}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
+                copied ? 'bg-green-500' : 'bg-gradient-to-r from-indigo-500 to-purple-500'
+              } text-white shadow-lg hover:shadow-xl transition-transform duration-300 transform hover:-translate-y-0.5`}
+            >
+              <Copy className="w-5 h-5" />
+              {copied ? 'Copied!' : 'Copy QR'}
+            </button>
+            <button
               onClick={() => setIsAudioEnabled(!isAudioEnabled)}
-              className={`p-2 rounded-[10px] ${
+              className={`p-2 rounded-full ${
                 isAudioEnabled ? 'bg-primary/30 text-primary' : 'bg-secondary/30 text-muted-foreground'
               } hover:bg-primary/20 transition`}
             >
               {isAudioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
             </button>
             <button
-              onClick={handleCopyRoomCode}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-                copied ? 'bg-green-500' : 'bg-gradient-to-r from-indigo-500 to-purple-600'
-              } text-white shadow-lg hover:shadow-xl transition-transform duration-300 transform hover:-translate-y-0.5`}
+              onClick={() => setIsVideoEnabled(!isVideoEnabled)}
+              className={`p-2 rounded-full ${
+                isVideoEnabled ? 'bg-primary/30 text-primary' : 'bg-secondary/30 text-muted-foreground'
+              } hover:bg-primary/20 transition`}
             >
-              <Copy className="w-5 h-5" />
-              {copied ? 'Copied!' : 'Copy QR'}
+              {isVideoEnabled ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
             </button>
             <button
               onClick={onLeave}
@@ -386,85 +390,87 @@ useEffect(() => {
           </div>
         </div>
       </header>
-
       <main className="flex-1 container mx-auto p-6 flex gap-6">
-      {/* Chat Section */}
-      <div className="flex-1 glass-panel rounded-xl flex flex-col h-full">
-        <div className="flex-1 p-4 space-y-4 overflow-y-auto">
-          {/* Subtitles Area */}
-          <div className="mb-4">
-            {Object.entries(subtitles).map(([speakerId, transcript]) => (
-              <p key={speakerId} className="text-sm text-gray-500">
-                {participants.find((p) => p.id === speakerId)?.displayName || 'Unknown'}: {transcript}
-              </p>
+        <div className="flex-1 glass-panel rounded-xl flex flex-col min-h-[400px]">
+          <div className="flex-1 p-4 space-y-4 overflow-y-auto">
+            <div className="mb-4">
+              {Object.entries(subtitles).map(([speakerId, transcript]) => (
+                <p key={speakerId} className="text-sm text-gray-500">
+                  {participants.find((p) => p.id === speakerId)?.displayName || 'Unknown'}: {transcript}
+                </p>
+              ))}
+            </div>
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex items-start gap-3 ${msg.user_id === userId ? 'flex-row-reverse' : ''}`}
+              >
+                <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
+                  <User className="w-4 h-4" />
+                </div>
+                <div
+                  className={`glass-panel rounded-lg p-3 max-w-[70%] ${
+                    msg.user_id === userId ? 'bg-primary/20' : ''
+                  }`}
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-medium text-sm">{msg.display_name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(msg.created_at).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <p>{msg.content}</p>
+                </div>
+              </div>
             ))}
           </div>
-          {/* Chat Messages */}
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex items-start gap-3 ${msg.user_id === userId ? 'flex-row-reverse' : ''}`}
-            >
-              <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
-                <User className="w-4 h-4" />
-              </div>
-              <div
-                className={`glass-panel rounded-lg p-3 max-w-[70%] ${
-                  msg.user_id === userId ? 'bg-primary/20' : ''
-                }`}
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="font-medium text-sm">{msg.display_name}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {new Date(msg.created_at).toLocaleTimeString()}
-                  </span>
-                </div>
-                <p>{msg.content}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-        {/* Audio Elements for Remote Streams */}
-        {Object.entries(remoteStreams).map(([userId, stream]) => (
-          <audio key={userId} ref={(audio) => audio && (audio.srcObject = stream)} autoPlay />
-        ))}
-        {/* Message Input */}
-        <form onSubmit={handleSendMessage} className="p-4 border-t border-secondary">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              placeholder="Type a message..."
-              className="flex-1 rounded-lg input-style p-2"
+          {Object.entries(remoteStreams).map(([userId, stream]) => (
+            <audio
+              key={userId}
+              ref={(audio) => {
+                if (audio) {
+                  audio.srcObject = stream;
+                  console.log(`Playing stream for ${userId}`);
+                }
+              }}
+              autoPlay
             />
-            <button
-              type="submit"
-              className="button-gradient p-2 rounded-lg text-white"
-              disabled={!message.trim()}
-            >
-              <Send className="w-5 h-5" />
-            </button>
-          </div>
-        </form>
-      </div>
-      {/* Participants Section */}
-      <div className="w-80 glass-panel rounded-xl p-4 h-full overflow-y-auto">
-        <h2 className="font-semibold mb-4">Participants</h2>
-        <div className="space-y-2">
-          {participants.map((p) => (
-            <div key={p.id} className="flex items-center gap-3 p-2 rounded-lg bg-secondary/50">
-              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
-                <User className="w-4 h-4 text-primary" />
-              </div>
-              <span className="flex-1">
-                {p.displayName} {p.id === userId && '(You)'}
-              </span>
-            </div>
           ))}
+          <form onSubmit={handleSendMessage} className="p-4 border-t border-secondary">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder="Type a message..."
+                className="flex-1 rounded-lg input-style p-2"
+              />
+              <button
+                type="submit"
+                className="button-gradient p-2 rounded-lg text-white"
+                disabled={!message.trim()}
+              >
+                <Send className="w-5 h-5" />
+              </button>
+            </div>
+          </form>
         </div>
-      </div>
-    </main>
+        <div className="w-80 glass-panel rounded-xl p-4 min-h-[400px] overflow-y-auto">
+          <h2 className="font-semibold mb-4">Participants</h2>
+          <div className="space-y-2">
+            {participants.map((p) => (
+              <div key={p.id} className="flex items-center gap-3 p-2 rounded-lg bg-secondary/50">
+                <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
+                  <User className="w-4 h-4 text-primary" />
+                </div>
+                <span className="flex-1">
+                  {p.displayName} {p.id === userId && '(You)'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </main>
     </div>
   );
 }
