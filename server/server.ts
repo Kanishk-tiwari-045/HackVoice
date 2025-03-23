@@ -36,33 +36,63 @@ const socketRoomMap: {
   [socketId: string]: { roomCode: string; userId: string };
 } = {};
 
+// Map userId to socket.id for signaling
+const userSockets: { [userId: string]: string } = {};
+
 // For presence: roomPresence[roomCode] = Set of userIds
 const roomPresence: { [roomCode: string]: Set<string> } = {};
+
+// Type definitions for WebRTC signaling data
+interface OfferData {
+  fromUserId: string;
+  targetUserId: string;
+  offer: any; // RTCSessionDescriptionInit or similar
+}
+
+interface AnswerData {
+  fromUserId: string;
+  targetUserId: string;
+  answer: any; // RTCSessionDescriptionInit or similar
+}
+
+interface IceCandidateData {
+  fromUserId: string;
+  targetUserId: string;
+  candidate: any; // RTCIceCandidateInit or similar
+}
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
   // Handle user joining a room
-  socket.on("join_room", (data: { roomCode: string; userId: string }) => {
-    const { roomCode, userId } = data;
+  socket.on(
+    "join_room",
+    (data: { roomCode: string; userId: string; displayName: string }) => {
+      const { roomCode, userId, displayName } = data;
 
-    // Store in a map so we know who belongs where
-    socketRoomMap[socket.id] = { roomCode, userId };
+      // Store in maps
+      socketRoomMap[socket.id] = { roomCode, userId };
+      userSockets[userId] = socket.id;
+      console.log(`User ${userId} joined with socket ${socket.id}`);
+      // Join the actual Socket.IO room
+      socket.join(roomCode);
 
-    // Join the actual Socket.IO room
-    socket.join(roomCode);
+      // Update presence for that room
+      if (!roomPresence[roomCode]) {
+        roomPresence[roomCode] = new Set();
+      }
+      roomPresence[roomCode].add(userId);
 
-    // Update presence for that room
-    if (!roomPresence[roomCode]) {
-      roomPresence[roomCode] = new Set();
+      // Broadcast presence to the room
+      io.to(roomCode).emit("presence_update", Array.from(roomPresence[roomCode]));
+
+      // Notify others in the room about the new participant
+      socket
+        .to(roomCode)
+        .emit("participant_joined", { participant: { id: userId, displayName } });
+      console.log(`User ${userId} (${displayName}) joined room ${roomCode}`);
     }
-    roomPresence[roomCode].add(userId);
-
-    // Broadcast presence to the room
-    io.to(roomCode).emit("presence_update", Array.from(roomPresence[roomCode]));
-
-    console.log(`User ${userId} joined room ${roomCode}`);
-  });
+  );
 
   // Fetch message history for a room
   socket.on("fetch_messages", async (roomCode) => {
@@ -114,6 +144,41 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Handle WebRTC signaling: offer
+  socket.on("offer", (data: OfferData) => {
+    const { fromUserId, targetUserId, offer } = data;
+    const targetSocketId = userSockets[targetUserId];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("offer", { fromUserId, offer });
+    } else {
+      console.warn(`Target user ${targetUserId} not found for offer from ${fromUserId}`);
+    }
+  });
+
+  // Handle WebRTC signaling: answer
+  socket.on("answer", (data: AnswerData) => {
+    const { fromUserId, targetUserId, answer } = data;
+    const targetSocketId = userSockets[targetUserId];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("answer", { fromUserId, answer });
+    } else {
+      console.warn(`Target user ${targetUserId} not found for answer from ${fromUserId}`);
+    }
+  });
+
+  // Handle WebRTC signaling: ice_candidate
+  socket.on("ice_candidate", (data: IceCandidateData) => {
+    const { fromUserId, targetUserId, candidate } = data;
+    const targetSocketId = userSockets[targetUserId];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("ice_candidate", { fromUserId, candidate });
+    } else {
+      console.warn(
+        `Target user ${targetUserId} not found for ICE candidate from ${fromUserId}`
+      );
+    }
+  });
+
   // Handle user leaving a room
   socket.on("leave_room", (roomCode) => {
     socket.leave(roomCode);
@@ -127,8 +192,9 @@ io.on("connection", (socket) => {
         "presence_update",
         Array.from(roomPresence[roomCode] || [])
       );
-      // Remove from map
+      // Remove from maps
       delete socketRoomMap[socket.id];
+      delete userSockets[userId];
     }
 
     console.log(`Socket ${socket.id} left room ${roomCode}`);
@@ -150,8 +216,9 @@ io.on("connection", (socket) => {
           Array.from(roomPresence[roomCode])
         );
       }
-      // Clean up the map
+      // Clean up the maps
       delete socketRoomMap[socket.id];
+      delete userSockets[userId];
     }
   });
 });

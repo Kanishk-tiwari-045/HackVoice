@@ -64,6 +64,8 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   }>({});
   const [subtitles, setSubtitles] = useState<{ [key: string]: string }>({});
   const [recognition, setRecognition] = useState<any>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
 
   // Initialize Socket.IO on mount
   useEffect(() => {
@@ -75,10 +77,9 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   }, []);
 
   const participantsRef = useRef<Participant[]>([]);
-    useEffect(() => {
-      participantsRef.current = participants;
-    }, [participants]);
-
+  useEffect(() => {
+    participantsRef.current = participants;
+  }, [participants]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -160,7 +161,6 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
         }
         return prev;
       });
-      // Optionally, re-run your logic to establish a peer connection with the new participant.
     };
 
     socket.on("participant_joined", handleParticipantJoined);
@@ -169,11 +169,26 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
     };
   }, [socket]);
 
+  // Listen for presence updates to track online users
+  useEffect(() => {
+    if (!socket) return;
+    const handlePresenceUpdate = (userIds: string[]) => {
+      setOnlineUserIds(userIds);
+    };
+    socket.on("presence_update", handlePresenceUpdate);
+    return () => {
+      socket.off("presence_update", handlePresenceUpdate);
+    };
+  }, [socket]);
+
   // Function to create a WebRTC peer connection
   const createPeerConnection = (targetUserId: string): RTCPeerConnection => {
-    const pc = new RTCPeerConnection();
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        console.log("Generated ICE candidate for", targetUserId);
         socket.emit("ice_candidate", {
           fromUserId: userId,
           targetUserId,
@@ -183,50 +198,70 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
     };
     pc.ontrack = (event) => {
       console.log(`Received stream from ${targetUserId}`, event.streams[0]);
+      console.log("Stream tracks:", event.streams[0].getTracks());
       setRemoteStreams((prev) => ({
         ...prev,
         [targetUserId]: event.streams[0],
       }));
     };
+    pc.onconnectionstatechange = () => {
+      console.log(`Connection state for ${targetUserId}: ${pc.connectionState}`);
+    };
     return pc;
   };
 
+  // Manage local audio stream
   useEffect(() => {
-    if (isAudioEnabled && socket) {
+    if (isAudioEnabled) {
       navigator.mediaDevices.getUserMedia({ audio: true })
         .then((stream) => {
           console.log("Microphone stream acquired:", stream);
-          participants.forEach((p) => {
-            // Only create a new connection if one does not already exist.
-            if (p.id !== userId && !peerConnectionsRef.current[p.id]) {
-              const pc = createPeerConnection(p.id);
-              stream.getTracks().forEach((track) => {
-                pc.addTrack(track, stream);
-              });
-              // Save the connection in the ref.
-              peerConnectionsRef.current[p.id] = pc;
-              pc.createOffer()
-                .then((offer) => {
-                  pc.setLocalDescription(offer);
-                  socket.emit("offer", { fromUserId: userId, targetUserId: p.id, offer });
-                })
-                .catch((err) => console.error("Error creating offer:", err));
-            }
-          });
+          setLocalStream(stream);
         })
         .catch((err) => console.error("Error accessing microphone:", err));
     } else {
-      // When audio is disabled, close all peer connections.
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+        setLocalStream(null);
+      }
+      // Close all peer connections
       Object.values(peerConnectionsRef.current).forEach((pc) => {
         if (typeof pc.close === "function") {
           pc.close();
         }
       });
-      // Optionally clear the ref (if you want to reset connections)
       peerConnectionsRef.current = {};
       setRemoteStreams({});
     }
-  }, [isAudioEnabled, participants, userId, socket]);  
+  }, [isAudioEnabled]);
+
+  // Manage WebRTC peer connections with online users
+  useEffect(() => {
+    if (!localStream || !socket) return;
+
+    // Close connections for users who are no longer online
+    Object.keys(peerConnectionsRef.current).forEach((userId) => {
+      if (!onlineUserIds.includes(userId)) {
+        peerConnectionsRef.current[userId].close();
+        delete peerConnectionsRef.current[userId];
+      }
+    });
+
+    // Create connections for online users
+    onlineUserIds.forEach((targetUserId) => {
+      if (targetUserId !== userId && !peerConnectionsRef.current[targetUserId]) {
+        const pc = createPeerConnection(targetUserId);
+        localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+        peerConnectionsRef.current[targetUserId] = pc;
+        pc.createOffer()
+          .then((offer) => {
+            pc.setLocalDescription(offer);
+            socket.emit("offer", { fromUserId: userId, targetUserId, offer });
+          })
+          .catch((err) => console.error("Error creating offer:", err));
+      }
+    });
+  }, [onlineUserIds, localStream, userId, socket]);
 
   // Handle WebRTC signaling
   useEffect(() => {
@@ -236,15 +271,21 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
       console.log("Received offer from", data.fromUserId);
       const { fromUserId, offer } = data;
       const pc = createPeerConnection(fromUserId);
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit("answer", {
-        fromUserId: userId,
-        targetUserId: fromUserId,
-        answer,
-      } as AnswerData);
-      // setPeerConnections((prev) => ({ ...prev, [fromUserId]: pc }));
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        console.log("Set remote description for offer from", fromUserId);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        console.log("Created and set local description for answer");
+        socket.emit("answer", {
+          fromUserId: userId,
+          targetUserId: fromUserId,
+          answer,
+        } as AnswerData);
+        peerConnectionsRef.current[fromUserId] = pc;
+      } catch (error) {
+        console.error("Error handling offer:", error);
+      }
     });
 
     socket.on("answer", async (data: AnswerData) => {
@@ -252,7 +293,14 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
       const { fromUserId, answer } = data;
       const pc = peerConnectionsRef.current[fromUserId];
       if (pc) {
-        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          console.log("Set remote description for answer from", fromUserId);
+        } catch (error) {
+          console.error("Error setting remote description for answer:", error);
+        }
+      } else {
+        console.warn("No peer connection found for", fromUserId);
       }
     });
 
@@ -261,7 +309,14 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
       const { fromUserId, candidate } = data;
       const pc = peerConnectionsRef.current[fromUserId];
       if (pc) {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          console.log("Added ICE candidate from", fromUserId);
+        } catch (error) {
+          console.error("Error adding ICE candidate:", error);
+        }
+      } else {
+        console.warn("No peer connection found for", fromUserId);
       }
     });
 
@@ -270,7 +325,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
       socket.off("answer");
       socket.off("ice_candidate");
     };
-  }, [socket, peerConnectionsRef, userId]);
+  }, [socket, userId]);
 
   // Initialize speech recognition
   useEffect(() => {
@@ -285,7 +340,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
       recog.onresult = (event: any) => {
         let interimTranscript = "";
         let finalTranscript = "";
-      
+
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           if (event.results[i].isFinal) {
             finalTranscript += event.results[i][0].transcript;
@@ -293,13 +348,12 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
             interimTranscript += event.results[i][0].transcript;
           }
         }
-      
+
         if (interimTranscript) {
           setSubtitles((prev) => ({ ...prev, [userId]: interimTranscript }));
         }
-      
+
         if (finalTranscript) {
-          // Update local messages immediately
           const newMsg: Message = {
             id: crypto.randomUUID(),
             user_id: userId,
@@ -308,18 +362,14 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
             display_name: username,
           };
           setMessages((prev) => [...prev, newMsg]);
-      
-          // Emit the chat message to the server
           socket.emit("chat_message", { roomCode, message: finalTranscript, userId });
-          
-          // Remove the subtitle for the current user
           setSubtitles((prev) => {
             const newSubs = { ...prev };
             delete newSubs[userId];
             return newSubs;
           });
         }
-      };      
+      };
 
       recog.onerror = (event: any) =>
         console.error("Speech recognition error:", event.error);
@@ -350,7 +400,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   }, [roomCode]);
 
   const joinRoom = useCallback(async () => {
-    if (!roomCode || !userId) return;
+    if (!roomCode || !userId || !socket) return;
     try {
       const resp = await fetch("http://localhost:3000/api/rooms/join", {
         method: "POST",
@@ -362,11 +412,10 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
         console.error("Join room error:", data.error || data);
       } else {
         console.log("Joined room successfully:", data);
+        console.log("Joining room with userId:", userId);
         fetchParticipants();
       }
-      if (socket) {
-        socket.emit("join_room", roomCode);
-      }
+      socket.emit("join_room", { roomCode, userId, displayName: username });
     } catch (err) {
       console.error("Error joining room:", err);
     }
@@ -397,9 +446,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   }, [roomCode]);
 
   useEffect(() => {
-    // Run only once if roomCode and userId are set
     if (roomCode && userId) {
-      // Wrap join and fetch calls in an async function
       const initializeRoom = async () => {
         await fetchMessages();
         await joinRoom();
@@ -408,41 +455,27 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
       };
       initializeRoom();
     }
-    // Only run when roomCode or userId changes
-  }, [roomCode, userId]); // Remove functions like joinRoom, etc., if they are memoized properly
+  }, [roomCode, userId]);
 
-  useEffect(() => {
-  if (!socket) return;
-  const handleChatMessage = (data: { userId: string; message: string; timestamp: string }) => {
-    // Use the latest participants from the ref:
-    const displayName =
-      participantsRef.current.find((p) => p.id === data.userId)?.displayName ||
-      "Anonymous";
-    const newMsg: Message = {
-      id: crypto.randomUUID(),
-      user_id: data.userId,
-      content: data.message,
-      created_at: data.timestamp,
-      display_name: displayName,
-    };
-    setMessages((prev) => [...prev, newMsg]);
-  };
-
-  socket.on("chat_message", handleChatMessage);
-  return () => {
-    socket.off("chat_message", handleChatMessage);
-  };
-}, [socket]);
-
-  // Listen for presence updates
   useEffect(() => {
     if (!socket) return;
-    const handlePresenceUpdate = (onlineUserIds: string[]) => {
-      console.log("Presence update:", onlineUserIds);
+    const handleChatMessage = (data: { userId: string; message: string; timestamp: string }) => {
+      const displayName =
+        participantsRef.current.find((p) => p.id === data.userId)?.displayName ||
+        "Anonymous";
+      const newMsg: Message = {
+        id: crypto.randomUUID(),
+        user_id: data.userId,
+        content: data.message,
+        created_at: data.timestamp,
+        display_name: displayName,
+      };
+      setMessages((prev) => [...prev, newMsg]);
     };
-    socket.on("presence_update", handlePresenceUpdate);
+
+    socket.on("chat_message", handleChatMessage);
     return () => {
-      socket.off("presence_update", handlePresenceUpdate);
+      socket.off("chat_message", handleChatMessage);
     };
   }, [socket]);
 
@@ -533,9 +566,10 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
           </div>
         </div>
       </header>
-      <main className="container mx-auto p-6 flex gap-6 h-[calc(100vh-80px)] overflow-hidden">
+      <main className="container mx-auto p-6 flex gap-6 h-[calc(100vh-90px)] overflow-hidden">
         <div className="flex-1 glass-panel rounded-lg flex flex-col overflow-hidden">
-          <div className="flex-1 p-4 space-y-4 overflow-y-auto rounded-lg scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-300">
+        <div className="flex-1 p-4 space-y-4 overflow-y-auto rounded-lg scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent" 
+         style={{scrollbarColor: "rgba(128, 128, 128, 0.3) transparent"}}>
             <div className="mb-4">
               {Object.entries(subtitles).map(([speakerId, transcript]) => (
                 <p key={speakerId} className="text-sm text-gray-500">
@@ -625,20 +659,6 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
               </div>
             ))}
           </div>
-        </div>
-        {/* Remote Audio Streams (hidden) */}
-        <div className="hidden">
-        {Object.entries(remoteStreams).map(([peerId, stream]) => (
-          <audio
-            key={peerId}
-            autoPlay
-            ref={(audio) => {
-              if (audio && stream) {
-                audio.srcObject = stream;
-              }
-            }}
-          />
-        ))}
         </div>
       </main>
     </div>
