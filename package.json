@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "tsc",
+    "build:client": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "server": "tsx watch server/server.ts"
