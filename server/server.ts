@@ -30,21 +30,37 @@ app.use("/api/rooms", roomsRouter);
 app.use("/api/messages", messagesRouter);
 app.use("/api/room-members", roomMembersRouter);
 
-// In-memory map to track online users per room
+// Track which user is in which room by socket ID
+// socketRoomMap[socket.id] = { roomCode, userId }
+const socketRoomMap: {
+  [socketId: string]: { roomCode: string; userId: string };
+} = {};
+
+// For presence: roomPresence[roomCode] = Set of userIds
 const roomPresence: { [roomCode: string]: Set<string> } = {};
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
   // Handle user joining a room
-  socket.on("user_connected", (data: { roomCode: string; userId: string }) => {
+  socket.on("join_room", (data: { roomCode: string; userId: string }) => {
     const { roomCode, userId } = data;
+
+    // Store in a map so we know who belongs where
+    socketRoomMap[socket.id] = { roomCode, userId };
+
+    // Join the actual Socket.IO room
     socket.join(roomCode);
+
+    // Update presence for that room
     if (!roomPresence[roomCode]) {
       roomPresence[roomCode] = new Set();
     }
     roomPresence[roomCode].add(userId);
+
+    // Broadcast presence to the room
     io.to(roomCode).emit("presence_update", Array.from(roomPresence[roomCode]));
+
     console.log(`User ${userId} joined room ${roomCode}`);
   });
 
@@ -62,6 +78,7 @@ io.on("connection", (socket) => {
         return;
       }
 
+      // Send the entire chat history back only to the requesting socket
       socket.emit("chat_history", messages);
     } catch (error) {
       console.error("Error fetching messages:", error);
@@ -73,7 +90,7 @@ io.on("connection", (socket) => {
     const { roomCode, message, userId } = data;
 
     try {
-      // Insert the message into the Supabase 'messages' table and retrieve the inserted row
+      // Insert the message into the Supabase 'messages' table
       const { data: insertedMessage, error } = await supabase
         .from("messages")
         .insert([{ room_code: roomCode, user_id: userId, content: message }])
@@ -87,9 +104,9 @@ io.on("connection", (socket) => {
       // Broadcast the inserted message to all clients in the room
       if (insertedMessage && insertedMessage.length > 0) {
         io.to(roomCode).emit("chat_message", {
-          userId: insertedMessage[0].user_id, // Accurate user ID from DB
-          message: insertedMessage[0].content, // The message content (typed or transcribed)
-          timestamp: insertedMessage[0].created_at, // Timestamp from DB
+          userId: insertedMessage[0].user_id,
+          message: insertedMessage[0].content,
+          timestamp: insertedMessage[0].created_at,
         });
       }
     } catch (error) {
@@ -100,6 +117,20 @@ io.on("connection", (socket) => {
   // Handle user leaving a room
   socket.on("leave_room", (roomCode) => {
     socket.leave(roomCode);
+
+    // Also remove them from presence if they're in there
+    const info = socketRoomMap[socket.id];
+    if (info && info.roomCode === roomCode) {
+      const { userId } = info;
+      roomPresence[roomCode]?.delete(userId);
+      io.to(roomCode).emit(
+        "presence_update",
+        Array.from(roomPresence[roomCode] || [])
+      );
+      // Remove from map
+      delete socketRoomMap[socket.id];
+    }
+
     console.log(`Socket ${socket.id} left room ${roomCode}`);
   });
 
@@ -107,15 +138,20 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     console.log("User disconnected:", socket.id);
 
-    // Update presence for all rooms the user was in
-    for (const roomCode in roomPresence) {
-      if (roomPresence[roomCode].has(socket.id)) {
-        roomPresence[roomCode].delete(socket.id);
+    // Figure out which room they belonged to
+    const info = socketRoomMap[socket.id];
+    if (info) {
+      const { roomCode, userId } = info;
+      // Remove from presence
+      if (roomPresence[roomCode]) {
+        roomPresence[roomCode].delete(userId);
         io.to(roomCode).emit(
           "presence_update",
           Array.from(roomPresence[roomCode])
         );
       }
+      // Clean up the map
+      delete socketRoomMap[socket.id];
     }
   });
 });

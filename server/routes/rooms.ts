@@ -59,11 +59,10 @@ router.get("/:roomCode", async (req, res) => {
   try {
     const { roomCode } = req.params;
     const { data, error } = await supabase
-      .from("rooms")
-      .select("code, qr_code, creator_id, created_at")
-      .eq("code", roomCode)
-      .single();
-
+    .from("rooms")
+    .select("code, qr_code, creator_id, created_at, active")
+    .eq("code", roomCode)
+    .single();
     if (error) throw error;
     res.json(data);
   } catch (error) {

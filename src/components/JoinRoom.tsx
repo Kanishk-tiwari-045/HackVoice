@@ -10,7 +10,6 @@ export function JoinRoom({ onBack, onJoin }: JoinRoomProps) {
   const [roomCode, setRoomCode] = useState("");
   const [error, setError] = useState("");
 
-  // Validate room code by fetching room details from the backend.
   const validateRoomCode = async (code: string): Promise<boolean> => {
     try {
       const res = await fetch(`http://localhost:3000/api/rooms/${code}`);
@@ -30,7 +29,7 @@ export function JoinRoom({ onBack, onJoin }: JoinRoomProps) {
       setError("Error validating room.");
       return false;
     }
-  };
+  };  
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -126,7 +125,7 @@ export function JoinRoom({ onBack, onJoin }: JoinRoomProps) {
             </label>
             <div
               onPaste={handlePaste}
-              className="mx-auto border-2 border-dashed border-secondary rounded-lg p-4 text-center cursor-pointer bg-gray-100 hover:bg-gray-200 transition-colors"
+              className="mx-auto border-2 border-dashed border-secondary rounded-lg p-4 text-center cursor-pointer bg-transparent hover:bg-secondary/50 transition-colors"
               style={{ width: "100%" }}
             >
               <p className="text-sm text-muted-foreground">
