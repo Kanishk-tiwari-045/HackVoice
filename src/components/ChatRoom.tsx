@@ -69,7 +69,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
 
   // Initialize Socket.IO on mount
   useEffect(() => {
-    const newSocket = io("http://localhost:3000");
+    const newSocket = io(`${import.meta.env.VITE_BACKEND_URL}`);
     setSocket(newSocket);
     return () => {
       newSocket.disconnect();
@@ -94,7 +94,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
     try {
       // 1. Remove the user from room_members
       const resp = await fetch(
-        `http://localhost:3000/api/room-members/${roomCode}`,
+        `${import.meta.env.VITE_BACKEND_URL}/api/room-members/${roomCode}`,
         {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
@@ -109,14 +109,14 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
 
       // 2. Check if there are still members in the room
       const resMembers = await fetch(
-        `http://localhost:3000/api/room-members/${roomCode}`
+        `${import.meta.env.VITE_BACKEND_URL}/api/room-members/${roomCode}`
       );
       const membersData = await resMembers.json();
 
       // If no members remain, mark the room as finished (active: false)
       if (Array.isArray(membersData) && membersData.length === 0) {
         const resFinish = await fetch(
-          `http://localhost:3000/api/rooms/finish/${roomCode}`,
+          `${import.meta.env.VITE_BACKEND_URL}/api/rooms/finish/${roomCode}`,
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -132,7 +132,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
         }
         // Optionally, delete the room messages as well:
         const resDeleteMessages = await fetch(
-          `http://localhost:3000/api/messages/${roomCode}`,
+          `${import.meta.env.VITE_BACKEND_URL}/api/messages/${roomCode}`,
           {
             method: "DELETE",
           }
@@ -390,7 +390,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
     if (!roomCode) return;
     try {
       const res = await fetch(
-        `http://localhost:3000/api/room-members/${roomCode}`
+        `${import.meta.env.VITE_BACKEND_URL}/api/room-members/${roomCode}`
       );
       const data = await res.json();
       setParticipants(data);
@@ -402,7 +402,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   const joinRoom = useCallback(async () => {
     if (!roomCode || !userId || !socket) return;
     try {
-      const resp = await fetch("http://localhost:3000/api/rooms/join", {
+      const resp = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/rooms/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId, roomCode }),
@@ -425,7 +425,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   const fetchMessages = useCallback(async () => {
     if (!roomCode) return;
     try {
-      const res = await fetch(`http://localhost:3000/api/messages/${roomCode}`);
+      const res = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/messages/${roomCode}`);
       const data = await res.json();
       setMessages(data);
     } catch (error) {
@@ -437,7 +437,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   const fetchRoomDetails = useCallback(async () => {
     if (!roomCode) return;
     try {
-      const res = await fetch(`http://localhost:3000/api/rooms/${roomCode}`);
+      const res = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/rooms/${roomCode}`);
       const data = await res.json();
       setQrCode(data.qr_code);
     } catch (error) {

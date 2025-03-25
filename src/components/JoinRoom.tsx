@@ -12,7 +12,7 @@ export function JoinRoom({ onBack, onJoin }: JoinRoomProps) {
 
   const validateRoomCode = async (code: string): Promise<boolean> => {
     try {
-      const res = await fetch(`http://localhost:3000/api/rooms/${code}`);
+      const res = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/rooms/${code}`);
       if (!res.ok) {
         setError("Room not found.");
         return false;
