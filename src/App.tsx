@@ -43,7 +43,7 @@ function App() {
     // Handles room creation by sending the valid user.id as creatorId.
     const handleCreateRoom = async () => {
       try {
-        const response = await fetch("http://localhost:3000/api/rooms/create", {
+        const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/rooms/create`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ creatorId: user?.id }),
