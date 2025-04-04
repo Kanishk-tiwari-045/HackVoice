@@ -68,6 +68,8 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
   const messagesRef = useRef({ fetched: false });
   const roomJoinedRef = useRef(false);
   const socketConnectedRef = useRef(false);
+  const subtitleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingSubtitles = useRef<{ [key: string]: string }>({});
 
   // WebRTC and Speech-to-Text state variables
   const peerConnectionsRef = useRef<{ [key: string]: RTCPeerConnection }>({});
@@ -125,7 +127,7 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
         socketConnectedRef.current = false;
       });
       
-      newSocket.on('disconnect', (reason: Error) => {
+      newSocket.on('disconnect', (reason: string) => {
         console.log('Socket disconnected:', reason);
         socketConnectedRef.current = false;
       });
@@ -268,6 +270,11 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
     
     // Clear subtitles when audio is disabled
     setSubtitles({});
+    pendingSubtitles.current = {};
+    if (subtitleTimeoutRef.current) {
+      clearTimeout(subtitleTimeoutRef.current);
+      subtitleTimeoutRef.current = null;
+    }
   };
 
   // Handle room leaving with proper cleanup
@@ -571,42 +578,42 @@ export function ChatRoom({ username, userId, onLeave }: ChatRoomProps) {
     };
     
     // Handle tracks from remote peer
-    // Update the ontrack handler in createPeerConnection
-pc.ontrack = (event) => {
-  console.log(`Received stream from ${targetUserId}`, event.streams[0]);
-  
-  // Create or update audio element immediately
-  const audioEl = audioElements.current[targetUserId] || new Audio();
-  audioEl.srcObject = event.streams[0];
-  audioEl.autoplay = true;
-  audioEl.muted = false; // Ensure audio isn't muted
-  
-  // Store reference
-  audioElements.current[targetUserId] = audioEl;
+    pc.ontrack = (event) => {
+      console.log(`Received stream from ${targetUserId}`, event.streams[0]);
+      
+      // Create or update audio element immediately
+      const audioEl = audioElements.current[targetUserId] || new Audio();
+      audioEl.srcObject = event.streams[0];
+      audioEl.autoplay = true;
+      audioEl.muted = false; // Ensure audio isn't muted
+      
+      // Store reference
+      audioElements.current[targetUserId] = audioEl;
 
-  // Handle audio play
-  const playAudio = () => {
-    audioEl.play().catch(err => 
-      console.error(`Audio play failed for ${targetUserId}:`, err)
-    );
-  };
+      // Handle audio play
+      const playAudio = () => {
+        audioEl.play().catch(err => 
+          console.error(`Audio play failed for ${targetUserId}:`, err)
+        );
+      };
 
-  // Attempt to play immediately
-  playAudio();
-  
-  // Retry play if needed
-  audioEl.onloadedmetadata = playAudio;
-  audioEl.onpause = () => {
-    console.log(`Audio paused for ${targetUserId}, attempting to resume`);
-    playAudio();
-  };
+      // Attempt to play immediately
+      playAudio();
+      
+      // Retry play if needed
+      audioEl.onloadedmetadata = playAudio;
+      audioEl.onpause = () => {
+        console.log(`Audio paused for ${targetUserId}, attempting to resume`);
+        playAudio();
+      };
 
-  // Update state for UI
-  setRemoteStreams(prev => ({
-    ...prev,
-    [targetUserId]: event.streams[0]
-  }));
-};
+      // Update state for UI
+      setRemoteStreams(prev => ({
+        ...prev,
+        [targetUserId]: event.streams[0]
+      }));
+    };
+    
     return pc;
   };
 
@@ -660,7 +667,7 @@ pc.ontrack = (event) => {
     }
   };
 
-  // Initialize speech recognition with improved error handling
+  // Initialize speech recognition with improved error handling and subtitle-to-chat functionality
   const initSpeechRecognition = useCallback(() => {
     // Only enable if audio is enabled and browser supports it
     if (!isAudioEnabled) {
@@ -692,99 +699,118 @@ pc.ontrack = (event) => {
         // Ignore if not supported
       }
 
-      const subtitleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-const pendingSubtitles = useRef<{ [key: string]: string }>({});
+      // Handle speech recognition results
+      recog.onresult = (event: any) => {
+        let finalTranscript = "";
+        let interimTranscript = "";
 
-// Update the speech recognition onresult handler
-recog.onresult = (event: any) => {
-  let finalTranscript = "";
-  let interimTranscript = "";
+        // Process results
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript + " ";
+          } else {
+            interimTranscript += event.results[i][0].transcript + " ";
+          }
+        }
 
-  // Process results
-  Array.from(event.results).forEach((result: any) => {
-    if (result.isFinal) {
-      finalTranscript += result[0].transcript + " ";
-    } else {
-      interimTranscript += result[0].transcript + " ";
-    }
-  });
+        // Handle interim results (subtitles)
+        if (interimTranscript.trim()) {
+          const trimmedInterim = interimTranscript.trim();
+          
+          // Update subtitle display
+          setSubtitles(prev => ({
+            ...prev,
+            [userId]: trimmedInterim
+          }));
+          
+          // Store in pending subtitles
+          pendingSubtitles.current[userId] = trimmedInterim;
 
-  // Handle interim results
-  if (interimTranscript.trim()) {
-    setSubtitles(prev => ({
-      ...prev,
-      [userId]: interimTranscript
-    }));
-    
-    // Store in pending subtitles
-    pendingSubtitles.current[userId] = interimTranscript;
+          // Reset the promotion timer
+          if (subtitleTimeoutRef.current) {
+            clearTimeout(subtitleTimeoutRef.current);
+          }
+          
+          // Set timeout to promote to message after a period of silence
+          subtitleTimeoutRef.current = setTimeout(() => {
+            const finalText = pendingSubtitles.current[userId]?.trim();
+            if (finalText && finalText.length > 5) { // Only convert substantial content
+              const newMsg: Message = {
+                id: crypto.randomUUID(),
+                user_id: userId,
+                content: finalText,
+                created_at: new Date().toISOString(),
+                display_name: username,
+              };
 
-    // Reset the promotion timer
-    if (subtitleTimeoutRef.current) {
-      clearTimeout(subtitleTimeoutRef.current);
-    }
-    
-    // Set timeout to promote to message
-    subtitleTimeoutRef.current = setTimeout(() => {
-      const finalText = pendingSubtitles.current[userId]?.trim();
-      if (finalText) {
-        const newMsg: Message = {
-          id: crypto.randomUUID(),
-          user_id: userId,
-          content: finalText,
-          created_at: new Date().toISOString(),
-          display_name: username,
-        };
+              // Add to local messages
+              setMessages(prev => [...prev, newMsg]);
+              
+              // Send to server
+              socket?.emit("chat_message", {
+                roomCode,
+                message: finalText,
+                userId,
+                displayName: username
+              });
 
-        setMessages(prev => [...prev, newMsg]);
-        socket?.emit("chat_message", {
-          roomCode,
-          message: finalText,
-          userId,
-          displayName: username
-        });
+              // Clear subtitle
+              setSubtitles(prev => {
+                const newSubs = { ...prev };
+                delete newSubs[userId];
+                return newSubs;
+              });
 
-        // Clear subtitle
-        setSubtitles(prev => {
-          const newSubs = { ...prev };
-          delete newSubs[userId];
-          return newSubs;
-        });
+              // Clear pending
+              delete pendingSubtitles.current[userId];
+            }
+          }, 2000); // Promote after 2 seconds of silence
+          
+          // Emit subtitle to other users
+          socket?.emit("subtitle", {
+            roomCode,
+            userId,
+            text: trimmedInterim,
+            displayName: username
+          });
+        }
+      
+        // Handle final results
+        if (finalTranscript.trim()) {
+          const trimmed = finalTranscript.trim();
+          
+          // Only create a message if it's substantial
+          if (trimmed.length > 5) {
+            const newMsg: Message = {
+              id: crypto.randomUUID(),
+              user_id: userId,
+              content: trimmed,
+              created_at: new Date().toISOString(),
+              display_name: username,
+            };
 
-        // Clear pending
-        delete pendingSubtitles.current[userId];
-      }
-    }, 2000); // Promote after 2 seconds of silence
-  }
+            // Add to local messages
+            setMessages(prev => [...prev, newMsg]);
+            
+            // Send to server
+            socket?.emit("chat_message", { 
+              roomCode, 
+              message: trimmed, 
+              userId,
+              displayName: username 
+            });
+          }
 
-  // Handle final results
-  if (finalTranscript.trim()) {
-    const trimmed = finalTranscript.trim();
-    const newMsg: Message = {
-      id: crypto.randomUUID(),
-      user_id: userId,
-      content: trimmed,
-      created_at: new Date().toISOString(),
-      display_name: username,
-    };
-
-    setMessages(prev => [...prev, newMsg]);
-    socket?.emit("chat_message", { 
-      roomCode, 
-      message: trimmed, 
-      userId,
-      displayName: username 
-    });
-
-    // Clear any pending subtitles
-    delete pendingSubtitles.current[userId];
-    setSubtitles(prev => {
-      const newSubs = { ...prev };
-      delete newSubs[userId];
-      return newSubs;
-    });
-  }
-};
+          // Clear any pending subtitles
+          delete pendingSubtitles.current[userId];
+          setSubtitles(prev => {
+            const newSubs = { ...prev };
+            delete newSubs[userId];
+            return newSubs;
+          });
+        }
+      };
+      
       // Handle errors
       recog.onerror = (event: any) => {
         console.error("Speech recognition error:", event.error);
@@ -935,411 +961,415 @@ recog.onresult = (event: any) => {
     };
 
     // Handle ICE candidates
-const handleIceCandidate = async (data: IceCandidateData) => {
-  console.log("Received ICE candidate from", data.fromUserId);
-  const { fromUserId, candidate } = data;
-  const pc = peerConnectionsRef.current[fromUserId];
-  
-  if (pc) {
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      console.log("Added ICE candidate from", fromUserId);
-    } catch (error) {
-      console.error("Error adding ICE candidate:", error);
-    }
-  } else {
-    console.warn("No peer connection found for", fromUserId);
-  }
-};
-
-socket.on("offer", handleOffer);
-socket.on("answer", handleAnswer);
-socket.on("ice_candidate", handleIceCandidate);
-
-return () => {
-  socket.off("offer", handleOffer);
-  socket.off("answer", handleAnswer);
-  socket.off("ice_candidate", handleIceCandidate);
-};
-}, [socket, userId, isAudioEnabled, recognition, initSpeechRecognition]);
-
-// Fetch participants
-const fetchParticipants = useCallback(async () => {
-  if (!roomCode) return;
-  try {
-    console.log("Fetching participants for room:", roomCode);
-    const res = await fetch(
-      `${import.meta.env.VITE_BACKEND_URL}/api/room-members/${roomCode}`
-    );
-    
-    if (!res.ok) {
-      throw new Error(`Failed to fetch participants: ${res.status}`);
-    }
-    
-    const data = await res.json();
-    console.log("Participants data:", data);
-    
-    // Merge with online status
-    const participantsWithStatus = data.map((p: Participant) => ({
-      ...p,
-      isOnline: onlineUserIds.includes(p.id)
-    }));
-    
-    setParticipants(participantsWithStatus);
-  } catch (error) {
-    console.error("Error fetching participants:", error);
-  }
-}, [roomCode, onlineUserIds]);
-
-// Join room
-const joinRoom = useCallback(async () => {
-  if (!roomCode || !userId || !socket) return;
-  
-  // Prevent multiple join attempts
-  if (roomJoinedRef.current) {
-    console.log("Already joined room, skipping join");
-    return;
-  }
-  
-  try {
-    console.log("Joining room:", roomCode, "as user:", userId);
-    
-    // Update database
-    const resp = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/rooms/join`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        userId, 
-        roomCode,
-        displayName: username // Ensure username is sent
-      }),
-    });
-    
-    if (!resp.ok) {
-      const errorText = await resp.text();
-      try {
-        const errorData = JSON.parse(errorText);
-        console.error("Join room API error:", errorData.error || errorData);
-      } catch {
-        console.error("Join room API error:", errorText);
+    const handleIceCandidate = async (data: IceCandidateData) => {
+      console.log("Received ICE candidate from", data.fromUserId);
+      const { fromUserId, candidate } = data;
+      const pc = peerConnectionsRef.current[fromUserId];
+      
+      if (pc) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          console.log("Added ICE candidate from", fromUserId);
+        } catch (error) {
+          console.error("Error adding ICE candidate:", error);
+        }
+      } else {
+        console.warn("No peer connection found for", fromUserId);
       }
+    };
+
+    socket.on("offer", handleOffer);
+    socket.on("answer", handleAnswer);
+    socket.on("ice_candidate", handleIceCandidate);
+
+    return () => {
+      socket.off("offer", handleOffer);
+      socket.off("answer", handleAnswer);
+      socket.off("ice_candidate", handleIceCandidate);
+    };
+  }, [socket, userId, isAudioEnabled, recognition, initSpeechRecognition]);
+
+  // Fetch participants
+  const fetchParticipants = useCallback(async () => {
+    if (!roomCode) return;
+    try {
+      console.log("Fetching participants for room:", roomCode);
+      const res = await fetch(
+        `${import.meta.env.VITE_BACKEND_URL}/api/room-members/${roomCode}`
+      );
+      
+      if (!res.ok) {
+        throw new Error(`Failed to fetch participants: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      console.log("Participants data:", data);
+      
+      // Merge with online status
+      const participantsWithStatus = data.map((p: Participant) => ({
+        ...p,
+        isOnline: onlineUserIds.includes(p.id)
+      }));
+      
+      setParticipants(participantsWithStatus);
+    } catch (error) {
+      console.error("Error fetching participants:", error);
+    }
+  }, [roomCode, onlineUserIds]);
+
+  // Join room
+  const joinRoom = useCallback(async () => {
+    if (!roomCode || !userId || !socket) return;
+    
+    // Prevent multiple join attempts
+    if (roomJoinedRef.current) {
+      console.log("Already joined room, skipping join");
       return;
     }
     
-    const data = await resp.json();
-    console.log("Joined room successfully in database:", data);
+    try {
+      console.log("Joining room:", roomCode, "as user:", userId);
+      
+      // Update database
+      const resp = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/rooms/join`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          userId, 
+          roomCode,
+          displayName: username // Ensure username is sent
+        }),
+      });
+      
+      if (!resp.ok) {
+        const errorText = await resp.text();
+        try {
+          const errorData = JSON.parse(errorText);
+          console.error("Join room API error:", errorData.error || errorData);
+        } catch {
+          console.error("Join room API error:", errorText);
+        }
+        return;
+      }
+      
+      const data = await resp.json();
+      console.log("Joined room successfully in database:", data);
+      
+      // Join socket room
+      socket.emit("join_room", { 
+        roomCode, 
+        userId, 
+        displayName: username 
+      });
+      
+      console.log("Emitted join_room event to socket");
+      
+      // Mark as joined ONLY after successful API call and socket event
+      roomJoinedRef.current = true;
+      
+      // Fetch participants after joining
+      await fetchParticipants();
+    } catch (err) {
+      console.error("Error joining room:", err);
+    }
+  }, [roomCode, userId, socket, username, fetchParticipants]);
+
+  // Fetch messages
+  const fetchMessages = useCallback(async () => {
+    if (!roomCode) return;
     
-    // Join socket room
-    socket.emit("join_room", { 
+    try {
+      console.log("Fetching messages for room:", roomCode);
+      const res = await fetch(
+        `${import.meta.env.VITE_BACKEND_URL}/api/messages/${roomCode}?order=created_at.asc`
+      );
+      
+      if (!res.ok) throw new Error(`Failed to fetch messages: ${res.status}`);
+      
+      const data = await res.json();
+      console.log(`Fetched ${data.length} messages`);
+      setMessages(data);
+      messagesRef.current.fetched = true;
+    } catch (error) {
+      console.error("Error fetching messages:", error);
+    }
+  }, [roomCode]);
+
+  // Fetch QR code
+  const fetchRoomDetails = useCallback(async () => {
+    if (!roomCode) return;
+    try {
+      console.log("Fetching room details for:", roomCode);
+      const res = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/rooms/${roomCode}`);
+      
+      if (!res.ok) {
+        throw new Error(`Failed to fetch room details: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      console.log("Room details:", data);
+      setQrCode(data.qr_code);
+    } catch (error) {
+      console.error("Error fetching room details:", error);
+    }
+  }, [roomCode]);
+
+  // Initialize room data on mount
+  useEffect(() => {
+    if (roomCode && userId) {
+      console.log("Initializing room:", roomCode);
+      const initializeRoom = async () => {
+        await fetchMessages();
+        await joinRoom();
+        await fetchParticipants();
+        await fetchRoomDetails();
+      };
+      initializeRoom();
+    }
+    
+    // Clean up on unmount - commented out to prevent duplicate execution with onLeave
+    // return () => {
+    //   if (roomCode && userId && roomJoinedRef.current) {
+    //     console.log("Running cleanup on unmount");
+    //     leaveRoom();
+    //   }
+    // };
+  }, [roomCode, userId, fetchMessages, joinRoom, fetchParticipants, fetchRoomDetails]);
+
+  // Handle chat messages from socket
+  useEffect(() => {
+    if (!socket) return;
+    
+    const handleChatMessage = (data: { 
+      userId: string; 
+      message: string; 
+      timestamp: string;
+      displayName: string;
+    }) => {
+      console.log("Received chat message:", data);
+      
+      // Only add if it's not from current user (to avoid duplicates)
+      if (data.userId !== userId) {
+        // Use provided display name or fallback
+        const displayName = data.displayName || 
+          participantsRef.current.find(p => p.id === data.userId)?.displayName || 
+          "Anonymous";
+        
+        const newMsg: Message = {
+          id: crypto.randomUUID(),
+          user_id: data.userId,
+          content: data.message,
+          created_at: data.timestamp || new Date().toISOString(),
+          display_name: displayName,
+        };
+        
+        setMessages((prev) => [...prev, newMsg]);
+      }
+    };
+
+    socket.on("chat_message", handleChatMessage);
+    return () => {
+      socket.off("chat_message", handleChatMessage);
+    };
+  }, [socket, userId]);
+
+  // Send text message
+  const handleSendMessage = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!message.trim() || !socket || !socket.connected) return;
+    
+    const newMsg: Message = {
+      id: crypto.randomUUID(),
+      user_id: userId,
+      content: message,
+      created_at: new Date().toISOString(),
+      display_name: username,
+    };
+    
+    setMessages((prev) => [...prev, newMsg]);
+    
+    socket.emit("chat_message", { 
       roomCode, 
-      userId, 
-      displayName: username 
+      message: message.trim(), 
+      userId,
+      displayName: username
     });
     
-    console.log("Emitted join_room event to socket");
-    
-    // Mark as joined ONLY after successful API call and socket event
-    roomJoinedRef.current = true;
-    
-    // Fetch participants after joining
-    await fetchParticipants();
-  } catch (err) {
-    console.error("Error joining room:", err);
-  }
-}, [roomCode, userId, socket, username, fetchParticipants]);
-
-// Fetch messages
-const fetchMessages = useCallback(async () => {
-  if (!roomCode) return;
-  
-  try {
-    console.log("Fetching messages for room:", roomCode);
-    const res = await fetch(
-      `${import.meta.env.VITE_BACKEND_URL}/api/messages/${roomCode}?order=created_at.asc`
-    );
-    
-    if (!res.ok) throw new Error(`Failed to fetch messages: ${res.status}`);
-    
-    const data = await res.json();
-    console.log(`Fetched ${data.length} messages`);
-    setMessages(data);
-    messagesRef.current.fetched = true;
-  } catch (error) {
-    console.error("Error fetching messages:", error);
-  }
-}, [roomCode]);
-
-// Fetch QR code
-const fetchRoomDetails = useCallback(async () => {
-  if (!roomCode) return;
-  try {
-    console.log("Fetching room details for:", roomCode);
-    const res = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/rooms/${roomCode}`);
-    
-    if (!res.ok) {
-      throw new Error(`Failed to fetch room details: ${res.status}`);
-    }
-    
-    const data = await res.json();
-    console.log("Room details:", data);
-    setQrCode(data.qr_code);
-  } catch (error) {
-    console.error("Error fetching room details:", error);
-  }
-}, [roomCode]);
-
-// Initialize room data on mount
-useEffect(() => {
-  if (roomCode && userId) {
-    console.log("Initializing room:", roomCode);
-    const initializeRoom = async () => {
-      await fetchMessages();
-      await joinRoom();
-      await fetchParticipants();
-      await fetchRoomDetails();
-    };
-    initializeRoom();
-  }
-  
-  return () => {
-    // Cleanup on unmount is commented out
-    // if (roomCode && userId && roomJoinedRef.current) {
-    //   console.log("Running cleanup on unmount");
-    //   leaveRoom();
-    // }
+    setMessage("");
   };
-}, [roomCode, userId, fetchMessages, joinRoom, fetchParticipants, fetchRoomDetails]);
 
-// Handle chat messages from socket
-useEffect(() => {
-  if (!socket) return;
-  
-  const handleChatMessage = (data: { 
-    userId: string; 
-    message: string; 
-    timestamp: string;
-    displayName: string;
-  }) => {
-    console.log("Received chat message:", data);
+  // Copy QR to clipboard
+  const handleCopyRoomCode = async () => {
+    if (!qrCode) return;
     
-    // Only add if it's not from current user (to avoid duplicates)
-    if (data.userId !== userId) {
-      // Use provided display name or fallback
-      const displayName = data.displayName || 
-        participantsRef.current.find(p => p.id === data.userId)?.displayName || 
-        "Anonymous";
+    try {
+      const res = await fetch(qrCode);
       
-      const newMsg: Message = {
-        id: crypto.randomUUID(),
-        user_id: data.userId,
-        content: data.message,
-        created_at: data.timestamp || new Date().toISOString(),
-        display_name: displayName,
-      };
+      if (!res.ok) {
+        throw new Error("Failed to fetch QR code image");
+      }
       
-      setMessages((prev) => [...prev, newMsg]);
+      const blob = await res.blob();
+      
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          [blob.type]: blob,
+        }),
+      ]);
+      
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy QR code to clipboard", err);
     }
   };
 
-  socket.on("chat_message", handleChatMessage);
-  return () => {
-    socket.off("chat_message", handleChatMessage);
-  };
-}, [socket, userId]);
-
-// Send text message
-const handleSendMessage = (e: React.FormEvent) => {
-  e.preventDefault();
-  if (!message.trim() || !socket || !socket.connected) return;
-  
-  const newMsg: Message = {
-    id: crypto.randomUUID(),
-    user_id: userId,
-    content: message,
-    created_at: new Date().toISOString(),
-    display_name: username,
-  };
-  
-  setMessages((prev) => [...prev, newMsg]);
-  
-  socket.emit("chat_message", { 
-    roomCode, 
-    message: message.trim(), 
-    userId,
-    displayName: username
-  });
-  
-  setMessage("");
-};
-
-// Copy QR to clipboard
-const handleCopyRoomCode = async () => {
-  if (!qrCode) return;
-  
-  try {
-    const res = await fetch(qrCode);
-    
-    if (!res.ok) {
-      throw new Error("Failed to fetch QR code image");
-    }
-    
-    const blob = await res.blob();
-    
-    await navigator.clipboard.write([
-      new ClipboardItem({
-        [blob.type]: blob,
-      }),
-    ]);
-    
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  } catch (err) {
-    console.error("Failed to copy QR code to clipboard", err);
-  }
-};
-
-// Render the UI
-return (
-  <div className="min-h-screen flex flex-col">
-    <header className="glass-panel py-4 px-6 shadow-md">
-      <div className="container mx-auto flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-            Room: {roomCode}
-          </h1>
-          <p className="text-sm text-gray-400">Connected as {userId}</p>
-        </div>
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => setIsAudioEnabled(!isAudioEnabled)}
-            className={`p-2 rounded-lg ${
-              isAudioEnabled
-                ? "bg-primary/30 text-primary"
-                : "bg-secondary/30 text-muted-foreground"
-            } hover:bg-primary/20 transition`}
-            title={isAudioEnabled ? "Disable microphone" : "Enable microphone"}
-          >
-            {isAudioEnabled ? (
-              <Mic className="w-5 h-5" />
-            ) : (
-              <MicOff className="w-5 h-5" />
-            )}
-          </button>
-          <button
-            onClick={handleCopyRoomCode}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-              copied
-                ? "bg-purple-600"
-                : "bg-gradient-to-r from-indigo-500 to-purple-500"
-            } text-white shadow-lg hover:shadow-xl transition-transform font-semibold duration-300 transform hover:brightness-90`}
-          >
-            <Copy className="w-5 h-5" />
-            {copied ? "Copied!" : "Copy QR"}
-          </button>
-          <button
-            onClick={leaveRoom}
-            className="button-gradient py-2 px-4 rounded-lg text-white font-semibold hover:brightness-110 transition"
-          >
-            Leave Room
-          </button>
-        </div>
-      </div>
-    </header>
-    <main className="container mx-auto p-6 flex gap-6 h-[calc(100vh-90px)] overflow-hidden">
-      <div className="flex-1 glass-panel rounded-lg flex flex-col overflow-hidden">
-      <div className="flex-1 p-4 space-y-4 overflow-y-auto rounded-lg scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent" 
-       style={{scrollbarColor: "rgba(128, 128, 128, 0.3) transparent"}}>
-          <div className="mb-4">
-            {Object.entries(subtitles).map(([speakerId, transcript]) => (
-              <p key={speakerId} className="text-sm text-gray-500">
-                {participants.find((p) => p.id === speakerId)?.displayName ||
-                  "Unknown"}
-                : {transcript}
-              </p>
-            ))}
+  // Render the UI
+  return (
+    <div className="min-h-screen flex flex-col">
+      <header className="glass-panel py-4 px-6 shadow-md">
+        <div className="container mx-auto flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+              Room: {roomCode}
+            </h1>
+            <p className="text-sm text-gray-400">Connected as {username}</p>
           </div>
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex items-start gap-3 ${
-                msg.user_id === userId ? "flex-row-reverse" : ""
-              }`}
-            >
-              <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
-                <User className="w-4 h-4" />
-              </div>
-              <div
-                className={`glass-panel rounded-lg p-3 max-w-[70%] ${
-                  msg.user_id === userId ? "bg-primary/20" : ""
-                }`}
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="font-medium text-sm">
-                    {msg.display_name}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {new Date(msg.created_at).toLocaleTimeString()}
-                  </span>
-                </div>
-                <p>{msg.content}</p>
-              </div>
-            </div>
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
-        {Object.entries(remoteStreams).map(([userId, stream]) => (
-          <audio
-            key={userId}
-            ref={(audio) => {
-              if (audio) {
-                audio.srcObject = stream;
-                console.log(`Playing stream for ${userId}`);
-              }
-            }}
-            autoPlay
-          />
-        ))}
-        <form
-          onSubmit={handleSendMessage}
-          className="border-t border-secondary p-4"
-        >
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              placeholder="Type a message..."
-              className="flex-1 rounded-lg input-style p-2"
-            />
+          <div className="flex items-center gap-4">
             <button
-              type="submit"
-              className="button-gradient p-2 rounded-lg text-white"
-              disabled={!message.trim()}
+              onClick={() => setIsAudioEnabled(!isAudioEnabled)}
+              className={`p-2 rounded-lg ${
+                isAudioEnabled
+                  ? "bg-primary/30 text-primary"
+                  : "bg-secondary/30 text-muted-foreground"
+              } hover:bg-primary/20 transition`}
+              title={isAudioEnabled ? "Disable microphone" : "Enable microphone"}
             >
-              <Send className="w-5 h-5" />
+              {isAudioEnabled ? (
+                <Mic className="w-5 h-5" />
+              ) : (
+                <MicOff className="w-5 h-5" />
+              )}
+            </button>
+            <button
+              onClick={handleCopyRoomCode}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
+                copied
+                  ? "bg-purple-600"
+                  : "bg-gradient-to-r from-indigo-500 to-purple-500"
+              } text-white shadow-lg hover:shadow-xl transition-transform font-semibold duration-300 transform hover:brightness-90`}
+            >
+              <Copy className="w-5 h-5" />
+              {copied ? "Copied!" : "Copy QR"}
+            </button>
+            <button
+              onClick={leaveRoom}
+              className="button-gradient py-2 px-4 rounded-lg text-white font-semibold hover:brightness-110 transition"
+            >
+              Leave Room
             </button>
           </div>
-        </form>
-      </div>
-      <div className="w-80 glass-panel rounded-lg p-6 min-h-[400px] overflow-y-auto">
-        <h2 className="font-semibold mb-4">Participants</h2>
-        <div className="space-y-2">
-          {participants.map((p) => (
-            <div
-              key={p.id}
-              className="flex items-center gap-3 p-2 rounded-lg bg-secondary/50"
-            >
-              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
-                <User className="w-4 h-4 text-primary" />
-              </div>
-              <span className="flex-1">
-                {p.displayName} {p.id === userId && "(You)"}
-              </span>
-            </div>
-          ))}
         </div>
-      </div>
-    </main>
-  </div>
-);
+      </header>
+      <main className="container mx-auto p-6 flex gap-6 h-[calc(100vh-90px)] overflow-hidden">
+        <div className="flex-1 glass-panel rounded-lg flex flex-col overflow-hidden">
+          <div className="flex-1 p-4 space-y-4 overflow-y-auto rounded-lg scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent" 
+           style={{scrollbarColor: "rgba(128, 128, 128, 0.3) transparent"}}>
+            <div className="mb-4">
+              {Object.entries(subtitles).map(([speakerId, transcript]) => (
+                <p key={speakerId} className="text-sm text-gray-500">
+                  {participants.find((p) => p.id === speakerId)?.displayName ||
+                    "Unknown"}
+                  : {transcript}
+                </p>
+              ))}
+            </div>
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex items-start gap-3 ${
+                  msg.user_id === userId ? "flex-row-reverse" : ""
+                }`}
+              >
+                <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
+                  <User className="w-4 h-4" />
+                </div>
+                <div
+                  className={`glass-panel rounded-lg p-3 max-w-[70%] ${
+                    msg.user_id === userId ? "bg-primary/20" : ""
+                  }`}
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-medium text-sm">
+                      {msg.display_name}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(msg.created_at).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <p>{msg.content}</p>
+                </div>
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+          {/* Audio elements for remote streams */}
+          {Object.entries(remoteStreams).map(([userId, stream]) => (
+            <audio
+              key={userId}
+              ref={(audio) => {
+                if (audio) {
+                  audio.srcObject = stream;
+                  console.log(`Playing stream for ${userId}`);
+                }
+              }}
+              autoPlay
+            />
+          ))}
+          <form
+            onSubmit={handleSendMessage}
+            className="border-t border-secondary p-4"
+          >
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder="Type a message..."
+                className="flex-1 rounded-lg input-style p-2"
+              />
+              <button
+                type="submit"
+                className="button-gradient p-2 rounded-lg text-white"
+                disabled={!message.trim()}
+              >
+                <Send className="w-5 h-5" />
+              </button>
+            </div>
+          </form>
+        </div>
+        <div className="w-80 glass-panel rounded-lg p-6 min-h-[400px] overflow-y-auto">
+          <h2 className="font-semibold mb-4">Participants</h2>
+          <div className="space-y-2">
+            {participants.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center gap-3 p-2 rounded-lg bg-secondary/50"
+              >
+                <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
+                  <User className="w-4 h-4 text-primary" />
+                </div>
+                <span className="flex-1">
+                  {p.displayName} {p.id === userId && "(You)"}
+                </span>
+                {p.isOnline && (
+                  <span className="inline-block w-2 h-2 rounded-full bg-green-500" title="Online"></span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </main>
+    </div>
+  );
 }
